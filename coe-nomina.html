@@ -628,13 +628,14 @@ tr.clk{cursor:pointer;}
     <div class="ns">Principal</div>
     <div class="ni" id="n-ini" onclick="goTab('ini')">▦ Tablero<span class="nbdg" id="nb-ini" style="display:none"></span></div>
     <div class="ni" id="n-asi" onclick="goTab('asi')">◷ Asistencia<span class="nbdg" id="nb-asi" style="display:none"></span></div>
-    <div class="ni solo-cap" id="n-imp" onclick="goTab('imp')">⇪ Checador</div>
+    <div class="ni solo-cap" id="n-imp" onclick="goTab('imp')">⇪ Subir checador (PDF)</div>
     <div class="ns">Pago</div>
     <div class="ni" id="n-nom" onclick="goTab('nom')">$ Nóminas<span class="nbdg" id="nb-nom" style="display:none"></span></div>
+    <div class="ni" id="n-rec" onclick="goTab('rec')">▤ Recibos</div>
     <div class="ni" id="n-mov" onclick="goTab('mov')">± Bonos y descuentos</div>
     <div class="ni" id="n-pre" onclick="goTab('pre')">✦ Prestaciones</div>
     <div class="ns">Personal</div>
-    <div class="ni" id="n-emp" onclick="goTab('emp')">☺ Empleados</div>
+    <div class="ni" id="n-emp" onclick="VIEW.empId=null;goTab('emp')">☺ Empleados</div>
     <div class="ni" id="n-rep" onclick="goTab('rep')">▥ Reportes</div>
     <div class="ns solo-cap">Control</div>
     <div class="ni solo-cap" id="n-bit" onclick="goTab('bit')">⌕ Bitácora</div>
@@ -699,11 +700,17 @@ const NOM = (() => {
     retardos_por_falta: 0, dias_quincena: 15, descontar_septimo: false,
     dias_aguinaldo: 15, prima_vacacional: 25, pagar_prima_al_gozar: true, horas_jornada: 8,
     prima_dominical: 25, egreso_modo: 'por_empleado', festivos_extra: [],
-    cobertura_factor: 1, horas_extra_modo: 'ley', dia_extra_factor: 1, descontar_prestamos_finiquito: true
+    cobertura_factor: 1, horas_extra_modo: 'ley', dia_extra_factor: 1, descontar_prestamos_finiquito: true, retroactivo_contrato: true
   };
   const CLASES = { comision: 'Comisión', bono: 'Bono', cobertura: 'Cobertura', extra: 'Días/horas extra', reembolso: 'Reembolso', anticipo: 'Anticipo de nómina', faltante: 'Faltante', descuento: 'Descuento', otro: 'Otro' };
   // ¿El concepto integra salario? Las comisiones NUNCA (no entran a finiquito, aguinaldo ni prestaciones)
   const integra = m => m.clase !== 'comision' && m.integra_salario !== false;
+  // Modalidad de empleo: contratos (indeterminado, determinado, prueba) vs honorarios
+  const MODALIDADES = { indeterminado: 'Contrato indeterminado', determinado: 'Contrato por tiempo determinado', prueba: 'Periodo de prueba', honorarios: 'Honorarios' };
+  const modalidad = e => e.modalidad || (e.esquema === 'honorarios' ? 'honorarios' : 'indeterminado');
+  const esHon = e => modalidad(e) === 'honorarios';
+  const diasAguinaldo = (e, R) => Math.max(R.dias_aguinaldo || 15, +e.dias_aguinaldo || 0);
+  const primaVac = (e, R) => Math.max(R.prima_vacacional || 25, +e.prima_vacacional || 0);
   const DEF_HORARIO = { entrada: '09:00', salida: '18:00', comida_min: 60, dias: [1, 2, 3, 4, 5, 6] };
 
   // ── Días de descanso obligatorio (LFT art. 74) ──
@@ -905,35 +912,59 @@ const NOM = (() => {
     const R = { ...DEF_REGLAS, ...(ctx.reglas || {}) }, F = ctx.fiscal || {};
     const N = ctx.nomina;
     const SD = r2(emp.salario_diario || (emp.salario_base || 0) / 15);
-    const s = resumen(emp, N.fecha_ini, N.fecha_fin, ctx.CH, ctx.INC, R, ctx.hoy);
     const P = [], Dd = [], avisos = [];
     const add = (arr, concepto, monto, extra = {}) => { monto = r2(monto); if (monto > 0) arr.push({ concepto, monto, gravable: true, ...extra }); };
+    const dm = f => f.slice(8, 10) + '/' + f.slice(5, 7);
+    const hon = esHon(emp), mod = modalidad(emp);
+    // Contratos: se paga la quincena completa y las incidencias (faltas, retardos, extras) se aplican en la quincena siguiente.
+    // Honorarios: se paga lo laborado en la misma quincena.
+    const retro = !hon && R.retroactivo_contrato !== false;
+    const A = retro ? quincena(addDays(N.fecha_ini, -1)) : { ini: N.fecha_ini, fin: N.fecha_fin };
+    const sPer = resumen(emp, N.fecha_ini, N.fecha_fin, ctx.CH, ctx.INC, R, ctx.hoy);
+    let s;
+    if (retro) {
+      const desde = ctx.desdeDatos && ctx.desdeDatos > A.ini ? ctx.desdeDatos : A.ini;
+      if (desde > A.fin) { s = { dias: [], calendario: 0, activos: 0, laborables: 0, asistencias: 0, faltas: 0, retardos: 0, minRetardo: 0, comidaExc: 0, minComidaExc: 0, salidasAnt: 0, incompletas: 0, sinGoce: 0, vacaciones: 0, incapacidad: 0, minExtra: 0, festivos: 0, festLab: 0, descLab: [], horasExtra: [], permHoras: [], coberturas: [], diasExtra: [], permutas: [], vacCuenta: 0 }; avisos.push(`Sin datos del checador del ${dm(A.ini)} al ${dm(A.fin)}: no se aplican incidencias de ese periodo`); }
+      else { s = resumen(emp, desde, A.fin, ctx.CH, ctx.INC, R, ctx.hoy); if (desde > A.ini) avisos.push(`Incidencias desde el ${dm(desde)} (antes no hay datos del checador)`); }
+    } else s = sPer;
+    const per = ` del ${dm(A.ini)} al ${dm(A.fin)}`;
 
-    // Días a pagar: quincena fija (15) proporcional a días de contrato dentro del periodo
-    const diasBase = r2(R.dias_quincena * (s.activos / Math.max(1, s.calendario)));
-    const sueldo = diasBase === R.dias_quincena && +emp.salario_base > 0 && Math.abs(emp.salario_base - SD * diasBase) < 1 ? +emp.salario_base : SD * diasBase;
-    add(P, `Sueldo (${diasBase} días × ${fmt(SD)})`, sueldo, { clave: 'sueldo' });
+    let diasBase;
+    if (hon) {
+      // Honorarios: días laborados (con checada, o justificados con goce); los días por venir cuentan como programados
+      const lab = sPer.dias.filter(d => (d.laborable && d.trabajado) || ['justificado', 'sin_control'].includes(d.estado)).length;
+      const fut = sPer.dias.filter(d => d.estado === 'futuro').length;
+      diasBase = lab + fut;
+      add(P, `Honorarios (${diasBase} día${diasBase === 1 ? '' : 's'} laborado${diasBase === 1 ? '' : 's'} × ${fmt(SD)})`, SD * diasBase, { clave: 'honorarios' });
+      if (fut) avisos.push(`${fut} día(s) por venir se cuentan como programados; recalcula al cierre de la quincena`);
+      const noPag = sPer.dias.filter(d => d.falta || d.sinGoce || d.vacacion || (d.estado === 'festivo')).length;
+      if (noPag) avisos.push(`${noPag} día(s) sin laborar no se pagan (faltas, festivos o permisos)`);
+    } else {
+      // Contrato: quincena fija (15) proporcional a los días de contrato dentro del periodo
+      diasBase = r2(R.dias_quincena * (sPer.activos / Math.max(1, sPer.calendario)));
+      const sueldo = diasBase === R.dias_quincena && +emp.salario_base > 0 && Math.abs(emp.salario_base - SD * diasBase) < 1 ? +emp.salario_base : SD * diasBase;
+      add(P, `Sueldo (${diasBase} días × ${fmt(SD)})`, sueldo, { clave: 'sueldo' });
+    }
 
-    let faltas = s.faltas;
+    let faltas = hon ? 0 : s.faltas;
     const faltasPorRetardo = R.retardos_por_falta > 0 ? Math.floor(s.retardos / R.retardos_por_falta) : 0;
     const factor = R.descontar_septimo ? 7 / 6 : 1;
-    if (faltas) add(Dd, `Faltas injustificadas (${faltas})`, SD * faltas * factor, { clave: 'faltas', resta_gravable: true });
-    if (faltasPorRetardo) add(Dd, `Retardos acumulados (${s.retardos} = ${faltasPorRetardo} falta${faltasPorRetardo > 1 ? 's' : ''})`, SD * faltasPorRetardo, { clave: 'retardos', resta_gravable: true });
-    if (s.sinGoce) add(Dd, `Días sin goce de sueldo (${s.sinGoce})`, SD * s.sinGoce, { clave: 'sin_goce', resta_gravable: true });
+    if (faltas) add(Dd, `Faltas injustificadas${per} (${faltas})`, SD * faltas * factor, { clave: 'faltas', resta_gravable: true });
+    if (faltasPorRetardo) add(Dd, `Retardos acumulados${per} (${s.retardos} = ${faltasPorRetardo} falta${faltasPorRetardo > 1 ? 's' : ''})`, SD * faltasPorRetardo, { clave: 'retardos', resta_gravable: true });
+    if (s.sinGoce && !hon) add(Dd, `Días sin goce de sueldo${per} (${s.sinGoce})`, SD * s.sinGoce, { clave: 'sin_goce', resta_gravable: true });
 
     const quitaPunt = s.retardos >= (R.retardos_quitan_puntualidad || 1) || (R.incompleta_quita_puntualidad && s.incompletas > 0);
     if (+emp.bono_puntualidad > 0) {
       if (!quitaPunt) add(P, 'Bono de puntualidad', emp.bono_puntualidad, { clave: 'bono_punt' });
-      else avisos.push(`Pierde bono de puntualidad (${s.retardos} retardo${s.retardos === 1 ? '' : 's'}${R.incompleta_quita_puntualidad && s.incompletas ? ', checadas incompletas' : ''})`);
+      else avisos.push(`Pierde bono de puntualidad${per} (${s.retardos} retardo${s.retardos === 1 ? '' : 's'}${R.incompleta_quita_puntualidad && s.incompletas ? ', checadas incompletas' : ''})`);
     }
     if (+emp.bono_asistencia > 0) {
       if (!(R.falta_quita_asistencia && (faltas + faltasPorRetardo) > 0)) add(P, 'Bono de asistencia', emp.bono_asistencia, { clave: 'bono_asis' });
-      else avisos.push(`Pierde bono de asistencia (${faltas} falta${faltas === 1 ? '' : 's'})`);
+      else avisos.push(`Pierde bono de asistencia${per} (${faltas} falta${faltas === 1 ? '' : 's'})`);
     }
     if (+emp.bono_no_fiscal > 0) add(P, 'Bono adicional', emp.bono_no_fiscal, { clave: 'bono_nf', gravable: false });
 
     const SH = SD / (R.horas_jornada || 8);
-    const dm = f => f.slice(8, 10) + '/' + f.slice(5, 7);
     const quien = i => i.otro_empleado_id && ctx.nombres ? ' · cubrió a ' + (ctx.nombres[i.otro_empleado_id] || '') : '';
     // Horas extra autorizadas: monto pactado, o por ley (dobles hasta 9 por semana, triples después, LFT 67-68), o sencillas
     const heMonto = s.horasExtra.filter(i => +i.monto > 0), heLey = s.horasExtra.filter(i => !(+i.monto > 0));
@@ -961,17 +992,17 @@ const NOM = (() => {
     // Permisos por horas sin goce
     if (s.permHoras.length) {
       const h = s.permHoras.reduce((a, i) => a + (+i.horas || 0), 0);
-      add(Dd, `Permiso por horas sin goce (${h} h × ${fmt(SH)})`, SH * h, { clave: 'permiso_horas', resta_gravable: true });
+      add(Dd, `Permiso por horas sin goce${retro ? per : ''} (${h} h × ${fmt(SH)})`, SH * h, { clave: 'permiso_horas', resta_gravable: true });
     }
-    if (s.permutas.length) avisos.push(`${s.permutas.length} permuta(s) de día en la quincena (sin efecto en el pago)`);
+    if (s.permutas.length) avisos.push(`${s.permutas.length} permuta(s) de día${per} (sin efecto en el pago)`);
     if (s.festLab) add(P, `Día festivo laborado (${s.festLab}) · pago doble adicional`, SD * 2 * s.festLab, { clave: 'festivo' });
     if (s.descLab.length) {
       add(P, `Descanso laborado (${s.descLab.length}) · pago doble adicional`, SD * 2 * s.descLab.length, { clave: 'descanso' });
       const dom = s.descLab.filter(i => D(i.fecha).getDay() === 0).length;
       if (dom) add(P, `Prima dominical (${dom})`, SD * (R.prima_dominical || 25) / 100 * dom, { clave: 'prima_dom' });
     }
-    if (R.pagar_prima_al_gozar && s.vacaciones) add(P, `Prima vacacional (${s.vacaciones} días${s.vacCuenta ? `, ${s.vacCuenta} a cuenta` : ''} × ${R.prima_vacacional}%)`, SD * s.vacaciones * R.prima_vacacional / 100, { clave: 'prima_vac' });
-    if (s.vacCuenta) avisos.push(`${s.vacCuenta} día(s) a cuenta de vacaciones: se pagan y se descuentan del saldo de vacaciones`);
+    if (!hon && R.pagar_prima_al_gozar && s.vacaciones) add(P, `Prima vacacional${per} (${s.vacaciones} días${s.vacCuenta ? `, ${s.vacCuenta} a cuenta` : ''} × ${primaVac(emp, R)}%)`, SD * s.vacaciones * primaVac(emp, R) / 100, { clave: 'prima_vac' });
+    if (s.vacCuenta && !hon) avisos.push(`${s.vacCuenta} día(s) a cuenta de vacaciones: se pagan y se descuentan del saldo de vacaciones`);
 
     // Movimientos capturados (comisiones, bonos, descuentos únicos)
     for (const m of (ctx.MOV || [])) {
@@ -997,12 +1028,12 @@ const NOM = (() => {
     const gravable = r2(P.filter(x => x.gravable !== false).reduce((a, x) => a + x.monto, 0) - Dd.filter(x => x.resta_gravable).reduce((a, x) => a + x.monto, 0));
     const diasPer = s.calendario;
     let fiscal = null;
-    if (emp.retener_isr && gravable > 0) {
+    if (emp.retener_isr && gravable > 0 && !hon) {
       const r = isrPeriodo(gravable, diasPer, F);
       fiscal = { base: gravable, ...r };
       if (r.neto > 0) add(Dd, 'ISR retenido', r.neto, { clave: 'isr' });
     }
-    if (emp.retener_imss) {
+    if (emp.retener_imss && !hon) {
       const sdf = emp.salario_fiscal ? emp.salario_fiscal / 15 : SD;
       const ant = antiguedad(emp.fecha_ingreso, N.fecha_fin);
       const sbc = r2(sdf * factorIntegracion(ant ? ant.anios + 1 : 1, R));
@@ -1013,16 +1044,20 @@ const NOM = (() => {
     }
 
     const tp = r2(P.reduce((a, x) => a + x.monto, 0)), td = r2(Dd.reduce((a, x) => a + x.monto, 0));
-    if (s.incompletas) avisos.push(`${s.incompletas} día(s) con checadas incompletas por revisar`);
+    const chk = hon ? sPer : s;
+    if (chk.incompletas) avisos.push(`${chk.incompletas} día(s) con checadas incompletas por revisar${hon ? '' : per}`);
+    if (retro && sPer.incompletas + sPer.faltas > 0 && N.fecha_fin < (ctx.hoy || '9')) avisos.push(`Incidencias de esta quincena (${sPer.faltas} falta(s), ${sPer.incompletas} incompleta(s)) se aplican en la siguiente`);
+    if (hon) avisos.push('Honorarios: se paga por transferencia y la persona entrega factura');
     const trabDescanso = s.dias.filter(d => d.flags.some(f => /sin autorizar pago/.test(f))).length;
     if (trabDescanso) avisos.push(`${trabDescanso} día(s) trabajado(s) en descanso/festivo sin autorizar pago`);
     if (tp - td < 0) avisos.push('El neto queda negativo: revisa descuentos');
     return {
       empleado_id: emp.id, percepciones: tp, deducciones: td, neto: r2(tp - td),
       detalle: {
-        nombre: emp.nombre, puesto: emp.puesto, esquema: emp.esquema, sd: SD, dias_pagados: diasBase,
+        nombre: emp.nombre, puesto: emp.puesto, esquema: emp.esquema, modalidad: mod, sd: SD, dias_pagados: diasBase,
+        asistencia_periodo: { ini: A.ini, fin: A.fin, retro },
         asistencia: {
-          laborables: s.laborables, asistencias: s.asistencias, faltas: s.faltas, retardos: s.retardos, min_retardo: s.minRetardo,
+          laborables: s.laborables, asistencias: s.asistencias, faltas: hon ? sPer.faltas : s.faltas, retardos: s.retardos, min_retardo: s.minRetardo,
           comida_exc: s.comidaExc, incompletas: s.incompletas, sin_goce: s.sinGoce, vacaciones: s.vacaciones, incapacidad: s.incapacidad
         },
         percepciones: P, deducciones: Dd, fiscal, avisos
@@ -1039,8 +1074,9 @@ const NOM = (() => {
     const fin = emp.fecha_baja && emp.fecha_baja < `${y}-12-31` ? emp.fecha_baja : `${y}-12-31`;
     const diasAnio = Math.max(0, diffDias(ini, fin) + 1);
     const prop = Math.min(1, diasAnio / 365);
-    const monto = r2(SD * (R.dias_aguinaldo || 15) * prop);
-    const P = [{ concepto: `Aguinaldo ${y} (${R.dias_aguinaldo} días × ${(prop * 100).toFixed(1)}% del año)`, monto, gravable: true, clave: 'aguinaldo' }], Dd = [];
+    const dAg = diasAguinaldo(emp, R);
+    const monto = r2(SD * dAg * prop);
+    const P = [{ concepto: `Aguinaldo ${y} (${dAg} días × ${(prop * 100).toFixed(1)}% del año)`, monto, gravable: true, clave: 'aguinaldo' }], Dd = [];
     let fiscal = null;
     if (emp.retener_isr) {
       const exento = r2(30 * F.uma_diaria);
@@ -1052,7 +1088,7 @@ const NOM = (() => {
     }
     const td = r2(Dd.reduce((a, x) => a + x.monto, 0));
     return { empleado_id: emp.id, percepciones: monto, deducciones: td, neto: r2(monto - td),
-      detalle: { nombre: emp.nombre, puesto: emp.puesto, esquema: emp.esquema, sd: SD, dias_pagados: r2((R.dias_aguinaldo || 15) * prop),
+      detalle: { nombre: emp.nombre, puesto: emp.puesto, esquema: emp.esquema, sd: SD, modalidad: modalidad(emp), dias_pagados: r2(dAg * prop),
         dias_anio: diasAnio, percepciones: P, deducciones: Dd, fiscal, avisos: diasAnio < 365 ? [`Proporcional: ${diasAnio} días trabajados en ${y}`] : [] } };
   }
 
@@ -1060,7 +1096,7 @@ const NOM = (() => {
   function saldoVacaciones(emp, INC, fecha) {
     const ant = antiguedad(emp.fecha_ingreso, fecha);
     if (!ant) return null;
-    const derecho = diasVacaciones(ant.anios);
+    const derecho = diasVacaciones(ant.anios) + (ant.anios >= 1 ? (+emp.vac_extra || 0) : 0);
     const desde = ant.anios >= 1 ? ant.ultimoAniv : emp.fecha_ingreso;
     let tomados = 0;
     for (const i of INC || []) {
@@ -1080,16 +1116,29 @@ const NOM = (() => {
     const baja = op.fecha_baja, ant = antiguedad(emp.fecha_ingreso, baja) || { anios: 0, dias: 0, ultimoAniv: emp.fecha_ingreso || baja };
     const anioIni = baja.slice(0, 4) + '-01-01';
     const iniAg = emp.fecha_ingreso && emp.fecha_ingreso > anioIni ? emp.fecha_ingreso : anioIni;
-    const P = [];
+    const P = [], hon = esHon(emp);
     const add = (c, m, k) => { m = r2(m); if (m > 0) P.push({ concepto: c, monto: m, gravable: true, clave: k }); };
-    if (+op.dias_pendientes > 0) add(`Salario pendiente (${op.dias_pendientes} días)`, SD * op.dias_pendientes, 'sueldo');
+    if (+op.dias_pendientes > 0) add(`${hon ? 'Honorarios pendientes' : 'Salario pendiente'} (${op.dias_pendientes} días)`, SD * op.dias_pendientes, 'sueldo');
+    if (hon) {
+      const Dh = [];
+      for (const d of (ctx.DESC || []).filter(d => d.empleado_id === emp.id && d.activo && !d.anulado)) {
+        const rest = r2(d.monto_total - (d.monto_cuota || 0) * (d.cuotas_pagadas || 0));
+        if (rest > 0 && op.descontar_prestamos !== false) Dh.push({ concepto: `Saldo de ${d.descripcion}`, monto: rest, descuento_id: d.id, liquida: true });
+      }
+      if (+op.descuentos > 0) Dh.push({ concepto: op.descuentos_concepto || 'Adeudos con la clínica', monto: r2(op.descuentos) });
+      const tp = r2(P.reduce((a, x) => a + x.monto, 0)), td = r2(Dh.reduce((a, x) => a + x.monto, 0));
+      return { empleado_id: emp.id, percepciones: tp, deducciones: td, neto: r2(tp - td),
+        detalle: { nombre: emp.nombre, puesto: emp.puesto, esquema: emp.esquema, modalidad: 'honorarios', sd: SD, fecha_baja: baja, motivo: op.motivo,
+          antiguedad: `${ant.anios} años (${ant.dias} días)`, percepciones: P, deducciones: Dh,
+          avisos: ['Honorarios: es un contrato civil; no genera aguinaldo, vacaciones, prima ni indemnización. Solo se pagan los días laborados pendientes.'] } };
+    }
     const dAg = diffDias(iniAg, baja) + 1;
-    add(`Aguinaldo proporcional (${dAg} días del año)`, SD * (R.dias_aguinaldo || 15) * dAg / 365, 'aguinaldo');
+    add(`Aguinaldo proporcional (${dAg} días del año × ${diasAguinaldo(emp, R)} días)`, SD * diasAguinaldo(emp, R) * dAg / 365, 'aguinaldo');
     const sv = saldoVacaciones(emp, ctx.INC, baja);
     const vacPend = r2((sv ? sv.disponibles : 0) + (sv ? sv.proporcional : 0));
     if (vacPend > 0) {
       add(`Vacaciones pendientes y proporcionales (${vacPend} días)`, SD * vacPend, 'vacaciones');
-      add(`Prima vacacional ${R.prima_vacacional}%`, SD * vacPend * R.prima_vacacional / 100, 'prima_vac');
+      add(`Prima vacacional ${primaVac(emp, R)}%`, SD * vacPend * primaVac(emp, R) / 100, 'prima_vac');
     }
     const anios = ant.dias / 365;
     const sdPA = Math.min(SD, 2 * (F.salario_minimo || 0) || SD);
@@ -1101,6 +1150,8 @@ const NOM = (() => {
       if (op.veinte_dias) add(`20 días por año (${anios.toFixed(2)} años)`, sdi * 20 * anios, 'indemn_20');
     }
     const Dd = [], avisos = [];
+    // Faltas que aún no se descontaban (las incidencias de contrato se aplican una quincena después)
+    if (+op.faltas_pendientes > 0) Dd.push({ concepto: `Faltas pendientes de descontar (${op.faltas_pendientes})`, monto: r2(SD * op.faltas_pendientes), clave: 'faltas' });
     // Préstamos y parcialidades pendientes
     const prest = (ctx.DESC || []).filter(d => d.empleado_id === emp.id && d.activo && !d.anulado);
     for (const d of prest) {
@@ -1118,7 +1169,7 @@ const NOM = (() => {
     const tp = r2(P.reduce((a, x) => a + x.monto, 0)), td = r2(Dd.reduce((a, x) => a + x.monto, 0));
     if (td > tp) avisos.unshift('Los descuentos superan las percepciones: revisa los adeudos (art. 110 LFT).');
     return { empleado_id: emp.id, percepciones: tp, deducciones: td, neto: r2(tp - td),
-      detalle: { nombre: emp.nombre, puesto: emp.puesto, esquema: emp.esquema, sd: SD, fecha_baja: baja, motivo: op.motivo,
+      detalle: { nombre: emp.nombre, puesto: emp.puesto, esquema: emp.esquema, modalidad: modalidad(emp), sd: SD, fecha_baja: baja, motivo: op.motivo,
         antiguedad: `${ant.anios} años (${ant.dias} días)`, percepciones: P, deducciones: Dd, avisos } };
   }
 
@@ -1146,7 +1197,7 @@ const NOM = (() => {
   const fmt = n => '$' + (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return { r2, toMin, fromMin, iso, D, addDays, dias, diffDias, DEF_REGLAS, DEF_HORARIO, festivosAnio, esFestivo,
-    CLASES, integra, diasVacaciones, antiguedad, factorIntegracion, horarioDia, analizarDia, resumen, isrTabla, isrPeriodo, imssObrero,
+    CLASES, integra, MODALIDADES, modalidad, esHon, diasAguinaldo, primaVac, diasVacaciones, antiguedad, factorIntegracion, horarioDia, analizarDia, resumen, isrTabla, isrPeriodo, imssObrero,
     reciboOrdinario, reciboAguinaldo, saldoVacaciones, finiquito, sugerirHorario, quincena, fmt };
 })();
 
@@ -1259,6 +1310,12 @@ const nomEmp = id => emp(id)?.nombre || '—';
 const nomUsr = id => DB.usuarios.find(u => u.id === id)?.nombre || '—';
 const corto = n => String(n || '').split(' ').slice(0, 2).map(w => w[0] + w.slice(1).toLowerCase()).join(' ');
 const activos = () => DB.empleados.filter(e => e.activo);
+// Primer día con datos del checador (antes no se descuentan faltas)
+function desdeDatos() {
+  let d = '';
+  for (const i of DB.importaciones) if (i.desde && (!d || i.desde < d)) d = i.desde;
+  return d || (DB.checadas[0]?.f || '');
+}
 // Último día con datos del checador: después de esa fecha no se marcan faltas
 function hoyCorte() {
   let c = '';
@@ -1462,7 +1519,7 @@ function goTab(t) {
   render();
 }
 function render() {
-  const fn = { ini: vTablero, asi: vAsistencia, imp: vImportar, nom: vNominas, mov: vMovimientos, pre: vPrestaciones, emp: vEmpleados, rep: vReportes, bit: vBitacora, cfg: vConfig }[tab];
+  const fn = { ini: vTablero, asi: vAsistencia, imp: vImportar, nom: vNominas, rec: vRecibos, mov: vMovimientos, pre: vPrestaciones, emp: vEmpleados, rep: vReportes, bit: vBitacora, cfg: vConfig }[tab];
   try { fn(); } catch (e) { console.error(e); document.getElementById('mainContent').innerHTML = `<div class="errbox">Error al mostrar: ${esc(e.message)}</div>`; }
 }
 function setMain(h) { document.getElementById('mainContent').innerHTML = h; }
@@ -1522,9 +1579,10 @@ function egresoTxt(r) {
   const eg = DB.egresos.find(x => x.id === r.egreso_id);
   if (!eg) return '<span class="mini">—</span>';
   if (eg.anulado) return '<span class="bdg bdg-can">Anulado</span>';
-  if (eg.estado === 'pagado') return `<span class="bdg bdg-pag">Pagado ${eg.fecha_pago ? fmtD(eg.fecha_pago) : ''}</span>`;
-  if (num(eg.pagado) > 0) return `<span class="bdg bdg-pro">Parcial ${$$(eg.pagado)}</span>`;
-  return '<span class="bdg bdg-pnd">Por pagar</span>';
+  const fac = eg.factura_pendiente && !eg.con_xml ? ' <span class="bdg bdg-pnd" title="Honorarios: factura por solicitar en Finanzas">sin factura</span>' : '';
+  if (eg.estado === 'pagado') return `<span class="bdg bdg-pag">Pagado ${eg.fecha_pago ? fmtD(eg.fecha_pago) : ''}</span>${fac}`;
+  if (num(eg.pagado) > 0) return `<span class="bdg bdg-pro">Parcial ${$$(eg.pagado)}</span>${fac}`;
+  return `<span class="bdg bdg-pnd">Por pagar</span>${fac}`;
 }
 
 // ══ TABLERO ═════════════════════════════════════
@@ -1548,7 +1606,7 @@ function vTablero() {
 
   const rk = enAsistencia().map(e => ({ e, s: resumenEmp(e, P.ini, P.fin < hoy() ? P.fin : hoy()) })).filter(x => x.s.retardos || x.s.faltas || x.s.comidaExc).sort((a, b) => (b.s.faltas * 3 + b.s.retardos) - (a.s.faltas * 3 + a.s.retardos)).slice(0, 8);
   setMain(`
-  <div class="ph" style="padding:0 0 18px;border:none"><div><div class="ptit">Tablero</div><div class="psub">Hola, ${esc(corto(ses.nombre))}. Quincena en curso y pendientes.</div></div><div>${perSelector()}</div></div>
+  <div class="ph" style="padding:0 0 18px;border:none"><div><div class="ptit">Tablero</div><div class="psub">Hola, ${esc(corto(ses.nombre))}. Quincena en curso y pendientes.</div></div><div style="display:flex;gap:8px;flex-wrap:wrap">${puedeCap() ? `<button class="btn btn-p" onclick="goTab('imp')">⇪ Subir PDF del checador</button>` : ''}${perSelector()}</div></div>
   <div class="dg">
     <div class="dc tap" onclick="goTab('asi')"><div class="dlbl">Faltas en la quincena</div><div class="dval" style="color:${p.faltas ? 'var(--dg)' : 'var(--sc)'}">${p.faltas}</div><div class="dmta">sin justificar</div></div>
     <div class="dc tap" onclick="goTab('asi')"><div class="dlbl">Retardos</div><div class="dval" style="color:${p.retardos ? 'var(--wn)' : 'var(--sc)'}">${p.retardos}</div><div class="dmta">tolerancia ${REG().tolerancia_min} min</div></div>
@@ -1596,6 +1654,7 @@ function vAsistencia() {
   <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Asistencia</div><div class="psub">Calculada con las checadas del checador, el horario de cada empleado y las incidencias.</div></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${perSelector()}
       <label class="chip ${VIEW.soloPend ? 'act' : ''}" onclick="VIEW.soloPend=!VIEW.soloPend;render()">Solo pendientes</label>
+      <button class="btn btn-p btn-sm solo-cap" onclick="goTab('imp')">⇪ Subir PDF del checador</button>
       <button class="btn btn-s btn-sm solo-cap" onclick="incidenciaMasiva()">+ Incidencia a varios</button>
       <button class="btn btn-s btn-sm" onclick="exportAsistencia()">⬇ Excel</button></div></div>
   ${sv.length ? `<div class="errbox">Checadas sin vincular: ${sv.map(([b, n]) => `<b>ID ${esc(b)} ${esc(n)}</b>`).join(', ')}. <span class="lk solo-cap" onclick="vincularModal()">Vincular ahora</span></div>` : ''}
@@ -1770,7 +1829,7 @@ function exportAsistencia() {
 let IMP = null;
 function vImportar() {
   setMain(`
-  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Checador</div><div class="psub">Sube el "Reporte de Eventos" del biométrico (PDF, Excel o CSV). Los repetidos se ignoran solos.</div></div>
+  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Subir checador</div><div class="psub">Sube el PDF "Reporte de Eventos" que genera el biométrico (también acepta Excel o CSV). Puedes subir reportes que se enciman: las checadas repetidas se ignoran.</div></div>
     <div><button class="btn btn-s btn-sm" onclick="vincularModal()">Vincular IDs del checador</button></div></div>
   <div class="drop" id="impDrop"><input type="file" accept=".pdf,.xls,.xlsx,.csv,.txt" onchange="leerChecador(this.files[0])">
     <div class="big">⇪</div><div style="font-weight:700;margin-top:6px">Arrastra aquí el archivo del checador</div><div class="mini">o toca para elegirlo</div></div>
@@ -1953,9 +2012,9 @@ function empleadosNomina(n) {
     && !(n.tipo === 'ordinaria' && e.fecha_baja && e.fecha_baja < n.fecha_ini));
 }
 function calcularRecibos(n) {
-  const ctx = { nomina: n, reglas: REG(), fiscal: FIS(), CH: DB.checadas, INC: DB.incidencias, MOV: DB.movimientos, DESC: n.tipo === 'ordinaria' ? DB.descuentos : [], hoy: hoyCorte(), nombres: Object.fromEntries(DB.empleados.map(e => [e.id, corto(e.nombre)])) };
+  const ctx = { nomina: n, reglas: REG(), fiscal: FIS(), CH: DB.checadas, INC: DB.incidencias, MOV: DB.movimientos, DESC: n.tipo === 'ordinaria' ? DB.descuentos : [], hoy: hoyCorte(), desdeDatos: desdeDatos(), nombres: Object.fromEntries(DB.empleados.map(e => [e.id, corto(e.nombre)])) };
   if (n.tipo === 'ordinaria') return empleadosNomina(n).map(e => NOM.reciboOrdinario(e, ctx));
-  if (n.tipo === 'aguinaldo') return empleadosNomina(n).filter(e => e.activo).map(e => NOM.reciboAguinaldo(e, ctx));
+  if (n.tipo === 'aguinaldo') return empleadosNomina(n).filter(e => e.activo && !NOM.esHon(e)).map(e => NOM.reciboAguinaldo(e, ctx));
   if (n.tipo === 'finiquito') return DB.recibos.filter(r => r.nomina_id === n.id && r.detalle?.op).map(r => { const x = NOM.finiquito(emp(r.empleado_id), r.detalle.op, { ...ctx, DESC: DB.descuentos }); x.detalle.op = r.detalle.op; return x; });
   // extraordinaria: solo movimientos del periodo
   const out = [];
@@ -1986,7 +2045,7 @@ function preChequeo(n) {
 }
 async function vNominaDetalle() {
   const n = DB.nominas.find(x => x.id === VIEW.nomId);
-  if (n.tipo === 'ordinaria' && RANGO && (n.fecha_ini < RANGO.desde || n.fecha_fin > RANGO.hasta)) { await asegurarRango(n.fecha_ini, n.fecha_fin); }
+  if (n.tipo === 'ordinaria' && RANGO && (NOM.addDays(n.fecha_ini, -16) < RANGO.desde || n.fecha_fin > RANGO.hasta)) { await asegurarRango(NOM.addDays(n.fecha_ini, -16), n.fecha_fin); }
   const guard = DB.recibos.filter(r => r.nomina_id === n.id);
   const editable = ['borrador', 'calculada', 'observada', 'revisada'].includes(n.estado);
   let calc = null, cambios = 0;
@@ -1999,6 +2058,9 @@ async function vNominaDetalle() {
   const filas = (calc && (cambios || !guard.length)) ? calc : guard;
   const mostrandoCalc = filas === calc;
   const tot = filas.reduce((a, r) => ({ p: a.p + num(r.percepciones), d: a.d + num(r.deducciones), n: a.n + num(r.neto) }), { p: 0, d: 0, n: 0 });
+  const esH = r => (r.detalle.modalidad || NOM.modalidad(emp(r.empleado_id) || {})) === 'honorarios';
+  const grp = { c: { n: 0, k: 0 }, h: { n: 0, k: 0 } };
+  for (const r of filas) { const g2 = esH(r) ? grp.h : grp.c; g2.n += num(r.neto); g2.k++; }
   const pg = estadoPago(n);
   const st = (k, t, sub, done, act, warn) => `<div class="step ${done ? 'done' : act ? 'act' : warn ? 'warn' : ''}"><b>${t}</b><span class="mini">${sub}</span></div>`;
   const av = editable ? preChequeo(n) : [];
@@ -2012,7 +2074,7 @@ async function vNominaDetalle() {
   setMain(`
   <div class="ph" style="padding:0 0 14px;border:none"><div><div class="ptit"><span class="lk" style="text-decoration:none" onclick="VIEW.nomId=null;render()">Nóminas</span> › ${esc(n.folio)} · ${TIPO_NOM[n.tipo]}</div>
     <div class="psub">${perTxt(n.fecha_ini, n.fecha_fin)} · ${esc(n.sede)} · pago ${fmtD(n.fecha_pago)} ${estadoBadge(n.estado)}</div></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-s btn-sm" onclick="imprimirRecibos('${n.id}')">🖨 Recibos</button><button class="btn btn-s btn-sm" onclick="imprimirReporte('${n.id}')">🖨 Reporte</button><button class="btn btn-s btn-sm" onclick="exportNomina('${n.id}')">⬇ Excel</button></div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-p btn-sm" onclick="imprimirRecibos('${n.id}')">🖨 Generar recibos</button><button class="btn btn-s btn-sm" onclick="plantillaBanco('${n.id}')">⬇ Plantilla del banco</button><button class="btn btn-s btn-sm" onclick="imprimirReporte('${n.id}')">🖨 Reporte</button><button class="btn btn-s btn-sm" onclick="exportNomina('${n.id}')">⬇ Excel</button></div></div>
   <div class="steps">
     ${st(1, 'Calculada', n.calculada_at ? esc(corto(nomUsr(n.calculada_por))) + ' · ' + fmtDT(n.calculada_at) : 'pendiente', !!n.calculada_at && n.estado !== 'borrador', ['borrador'].includes(n.estado))}
     ${st(2, 'Revisada (Contadora)', n.revisada_at ? esc(corto(nomUsr(n.revisada_por))) + ' · ' + fmtDT(n.revisada_at) : 'pendiente', ['revisada', 'autorizada'].includes(n.estado), ['calculada'].includes(n.estado), n.estado === 'observada')}
@@ -2024,20 +2086,24 @@ async function vNominaDetalle() {
   ${av.length ? `<div class="alist" style="margin-bottom:14px">${av.map(a => `<div class="aitem ${a.c}" ${a.go ? `onclick="${a.go}"` : ''}><div class="at">${esc(a.t)}</div></div>`).join('')}</div>` : ''}
   ${mostrandoCalc && guard.length ? `<div class="warnbox">Hay cambios desde el último cálculo guardado (${cambios} recibo${cambios === 1 ? '' : 's'}): asistencia, incidencias o movimientos nuevos. Guarda el recálculo para continuar.</div>` : ''}
   ${mostrandoCalc && !guard.length ? `<div class="warnbox">Vista previa del cálculo. Revisa y guárdalo con PIN.</div>` : ''}
-  <div class="dg" style="grid-template-columns:repeat(3,1fr)">
-    <div class="dc"><div class="dlbl">Percepciones</div><div class="dval" style="font-size:20px">${$$(tot.p)}</div></div>
-    <div class="dc"><div class="dlbl">Deducciones</div><div class="dval" style="font-size:20px;color:var(--dg)">${$$(tot.d)}</div></div>
+  <div class="dg">
+    <div class="dc"><div class="dlbl">Percepciones</div><div class="dval" style="font-size:20px">${$$(tot.p)}</div><div class="dmta">deducciones ${$$(tot.d)}</div></div>
     <div class="dc"><div class="dlbl">Neto a pagar</div><div class="dval" style="font-size:20px;color:var(--pr)">${$$(tot.n)}</div><div class="dmta">${filas.length} empleados</div></div>
+    <div class="dc"><div class="dlbl">Contrato · dispersión bancaria</div><div class="dval" style="font-size:20px">${$$(grp.c.n)}</div><div class="dmta">${grp.c.k} empleado(s) · un solo pago con plantilla del banco</div></div>
+    <div class="dc"><div class="dlbl">Honorarios · transferencia + factura</div><div class="dval" style="font-size:20px">${$$(grp.h.n)}</div><div class="dmta">${grp.h.k} persona(s) · pasan a Facturas por solicitar</div></div>
   </div>
-  <div class="tc"><table><thead><tr><th>Empleado</th><th class="tr">Días</th><th class="tr">F</th><th class="tr">R</th><th class="tr">Percepciones</th><th class="tr">Deducciones</th><th class="tr">Neto</th><th>${n.estado === 'autorizada' ? 'Pago' : 'Avisos'}</th></tr></thead><tbody>
+  ${n.tipo === 'ordinaria' ? `<div class="mini" style="margin:-8px 0 14px">Contratos: sueldo de esta quincena con incidencias del ${perTxt(NOM.quincena(NOM.addDays(n.fecha_ini, -1)).ini, NOM.quincena(NOM.addDays(n.fecha_ini, -1)).fin)}. Honorarios: días laborados de esta quincena.</div>` : ''}
+  <div class="tc"><table><thead><tr><th>Empleado</th><th>Modalidad</th><th class="tr">Días</th><th class="tr">F</th><th class="tr">R</th><th class="tr">Percepciones</th><th class="tr">Deducciones</th><th class="tr">Neto</th><th>${n.estado === 'autorizada' ? 'Pago' : 'Avisos'}</th><th></th></tr></thead><tbody>
     ${filas.sort((a, b) => (a.detalle.nombre || '').localeCompare(b.detalle.nombre || '')).map(r => { const a = r.detalle.asistencia || {}; const g = guard.find(x => x.empleado_id === r.empleado_id); const dif = mostrandoCalc && g && Math.abs(num(g.neto) - r.neto) > 0.009;
-      return `<tr class="clk" onclick="verRecibo('${r.empleado_id}')"><td><b>${esc(corto(r.detalle.nombre))}</b><div class="mini">${esc(r.detalle.puesto || '')} · ${esc(r.detalle.esquema || '')}</div></td>
+      return `<tr class="clk" onclick="verRecibo('${r.empleado_id}')"><td><b>${esc(corto(r.detalle.nombre))}</b><div class="mini">${esc(r.detalle.puesto || '')}</div></td>
+      <td>${esH(r) ? '<span class="bdg bdg-a1">Honorarios</span>' : '<span class="bdg bdg-aut">Contrato</span>'}</td>
       <td class="tr mono">${r.detalle.dias_pagados ?? '—'}</td><td class="tr mono" style="color:${a.faltas ? 'var(--dg)' : ''}">${a.faltas ?? '—'}</td><td class="tr mono" style="color:${a.retardos ? 'var(--wn)' : ''}">${a.retardos ?? '—'}</td>
       <td class="tr amt">${$$(r.percepciones)}</td><td class="tr amt" style="color:var(--dg)">${$$(r.deducciones)}</td><td class="tr amt"><b>${$$(r.neto)}</b>${dif ? `<div class="mini" style="color:var(--wn)">antes ${$$(g.neto)}</div>` : ''}${mostrandoCalc && !g && guard.length ? '<div class="mini" style="color:var(--wn)">nuevo</div>' : ''}</td>
-      <td>${n.estado === 'autorizada' ? egresoTxt(g || r) : (r.detalle.avisos || []).length ? `<span class="bdg bdg-pnd" title="${esc(r.detalle.avisos.join('\n'))}">⚠ ${r.detalle.avisos.length}</span>` : '<span class="mini">—</span>'}</td></tr>`; }).join('') || '<tr><td colspan="8"><div class="emp">Sin empleados para esta nómina.</div></td></tr>'}
+      <td>${n.estado === 'autorizada' ? egresoTxt(g || r) : (r.detalle.avisos || []).length ? `<span class="bdg bdg-pnd" title="${esc(r.detalle.avisos.join('\n'))}">⚠ ${r.detalle.avisos.length}</span>` : '<span class="mini">—</span>'}</td>
+      <td><button class="btn btn-s btn-sm" onclick="event.stopPropagation();imprimirRecibos('${n.id}','${r.empleado_id}')">🖨 Recibo</button></td></tr>`; }).join('') || '<tr><td colspan="10"><div class="emp">Sin empleados para esta nómina.</div></td></tr>'}
   </tbody></table></div>
   <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;margin-top:16px">${acciones.join('')}</div>
-  ${n.estado === 'autorizada' ? `<div class="mini" style="margin-top:10px;text-align:right">Los pagos se registran en <a class="lk" href="${document.getElementById('lnkFin').href}" target="_blank">COE Finanzas → Por pagar</a> (categoría Nómina), con su comprobante.</div>` : ''}`);
+  ${n.estado === 'autorizada' ? `<div class="mini" style="margin-top:10px;text-align:right">En <a class="lk" href="${document.getElementById('lnkFin').href}" target="_blank">COE Finanzas → Por pagar</a>: contratos = un egreso de dispersión (comprobante: la transferencia de nómina del banco); honorarios = un egreso por persona que queda en Facturas por solicitar.</div>` : ''}`);
 }
 function reciboDe(eid) {
   const n = DB.nominas.find(x => x.id === VIEW.nomId);
@@ -2083,8 +2149,9 @@ async function revisarNomina(dec) {
 }
 async function autorizarNomina() {
   const n = DB.nominas.find(x => x.id === VIEW.nomId);
-  const modo = REG().egreso_modo === 'global' ? 'un egreso global' : `un egreso por empleado (${n.empleados})`;
-  if (!(await confirmar(`Autorizar ${n.folio} por ${$$(n.neto)}.\n\nSe registra en COE Finanzas como ${modo}, categoría Nómina, vence el ${fmtD(n.fecha_pago)}. Se aplican las parcialidades de préstamos. ¿Continuar?`, 'Autorizar nómina', 'Autorizar'))) return;
+  const rs = DB.recibos.filter(r => r.nomina_id === n.id), h = rs.filter(r => (r.detalle.modalidad || NOM.modalidad(emp(r.empleado_id) || {})) === 'honorarios');
+  const tc = rs.filter(r => !h.includes(r)).reduce((a, r) => a + num(r.neto), 0), th = h.reduce((a, r) => a + num(r.neto), 0);
+  if (!(await confirmar(`Autorizar ${n.folio} por ${$$(n.neto)}.\n\nSe registra en COE Finanzas con vencimiento ${fmtD(n.fecha_pago)}:\n• Contratos: un egreso de dispersión de nómina por ${$$(tc)} (${rs.length - h.length} empleados), pagado con la plantilla del banco.\n• Honorarios: ${h.length} egreso(s) por ${$$(th)}, cada uno a nombre de la persona y en Facturas por solicitar.\n\nSe aplican las parcialidades de préstamos. ¿Continuar?`, 'Autorizar nómina', 'Autorizar'))) return;
   const r = await firmar('nom_nomina_autorizar', { p_nomina: n.id }, { titulo: 'Autorizar nómina', sub: `Director General · ${n.folio} · ${$$(n.neto)}` });
   if (!r) return;
   toast('Autorizada y enviada a COE Finanzas', 'success'); await recargar();
@@ -2134,17 +2201,40 @@ function imprimirRecibos(nid, eid) {
   if (!rs.length) return toast('No hay recibos calculados', 'warning');
   const html = rs.map(r => {
     const d = r.detalle, e = emp(r.empleado_id) || {}, a = d.asistencia;
+    const hon = (d.modalidad || NOM.modalidad(e)) === 'honorarios';
     const n2 = Math.max(d.percepciones.length, d.deducciones.length);
-    return `<div class="rc"><div class="hd"><img src="${LOGO}"><div class="t"><b>Centro Ocular Especializado</b><div class="mini">Recibo de nómina ${TIPO_NOM[n.tipo].toLowerCase()} · ${n.folio} · ${perTxt(n.fecha_ini, n.fecha_fin)} · pago ${fmtD(n.fecha_pago)}</div></div>${n.estado !== 'autorizada' ? '<b style="color:#b00">PRELIMINAR</b>' : ''}</div>
+    const ap = d.asistencia_periodo;
+    return `<div class="rc"><div class="hd"><img src="${LOGO}"><div class="t"><b>Centro Ocular Especializado</b><div class="mini">${hon ? 'Comprobante de pago por honorarios' : 'Recibo de nómina ' + TIPO_NOM[n.tipo].toLowerCase()} · ${n.folio} · ${perTxt(n.fecha_ini, n.fecha_fin)} · pago ${fmtD(n.fecha_pago)}${ap && ap.retro ? ` · incidencias del ${fmtD(ap.ini)} al ${fmtD(ap.fin)}` : ''}</div></div>${n.estado !== 'autorizada' ? '<b style="color:#b00">PRELIMINAR</b>' : ''}</div>
     <table style="margin-bottom:6px"><tr><td><b>${esc(d.nombre)}</b><div class="mini">${esc(d.puesto || '')} · ${esc(e.sede || n.sede)}</div></td><td>RFC <span class="mono">${esc(e.rfc || '—')}</span><br>NSS <span class="mono">${esc(e.nss || '—')}</span></td>
-      <td>Salario diario <b class="mono">${$$(d.sd)}</b><br>Días pagados <b class="mono">${d.dias_pagados ?? '—'}</b></td>${a ? `<td>Faltas <b>${a.faltas}</b> · Retardos <b>${a.retardos}</b><br>Asistencias <b>${a.asistencias}/${a.laborables}</b></td>` : ''}</tr></table>
+      <td>${hon ? 'Pago por día' : 'Salario diario'} <b class="mono">${$$(d.sd)}</b><br>${hon ? 'Días laborados' : 'Días pagados'} <b class="mono">${d.dias_pagados ?? '—'}</b></td>${a ? `<td>Faltas <b>${a.faltas}</b> · Retardos <b>${a.retardos}</b><br>Asistencias <b>${a.asistencias}/${a.laborables}</b></td>` : ''}</tr></table>
     <div class="g"><table><tr><th>Percepciones</th><th class="r">Importe</th></tr>${d.percepciones.map(x => `<tr><td>${esc(x.concepto)}</td><td class="r mono">${$$(x.monto)}</td></tr>`).join('')}${'<tr><td>&nbsp;</td><td></td></tr>'.repeat(Math.max(0, n2 - d.percepciones.length))}<tr class="tt"><td>Total percepciones</td><td class="r mono">${$$(r.percepciones)}</td></tr></table>
       <table><tr><th>Deducciones</th><th class="r">Importe</th></tr>${d.deducciones.map(x => `<tr><td>${esc(x.concepto)}</td><td class="r mono">${$$(x.monto)}</td></tr>`).join('')}${'<tr><td>&nbsp;</td><td></td></tr>'.repeat(Math.max(0, n2 - d.deducciones.length))}<tr class="tt"><td>Total deducciones</td><td class="r mono">${$$(r.deducciones)}</td></tr></table></div>
     <div class="net"><span>NETO RECIBIDO</span><span class="mono">${$$(r.neto)}</span></div>
-    <div class="mini" style="margin-top:6px">Recibí de Centro Ocular Especializado la cantidad neta indicada, por los conceptos y periodo descritos, sin que se me adeude cantidad alguna por dichos conceptos a la fecha.</div>
-    <div class="fir"><div>Firma del trabajador<br>${esc(d.nombre)}</div><div>Fecha de recibido</div></div></div>`;
+    <div class="mini" style="margin-top:6px">${hon ? `Pago por servicios profesionales independientes (honorarios), por transferencia${e.banco ? ' a ' + esc(e.banco) : ''}${e.clabe ? ' · CLABE ' + esc(e.clabe) : ''}. El prestador entrega su factura (CFDI) por el importe recibido. No es una relación laboral.` : `Recibí de Centro Ocular Especializado la cantidad neta indicada, por los conceptos y periodo descritos, sin que se me adeude cantidad alguna por dichos conceptos a la fecha. Pago por transferencia de nómina${e.banco ? ' · ' + esc(e.banco) : ''}.`}</div>
+    <div class="fir"><div>${hon ? 'Firma del prestador' : 'Firma del trabajador'}<br>${esc(d.nombre)}</div><div>Fecha de recibido</div></div></div>`;
   }).join('');
   ventanaImpresion(`Recibos ${n.folio}`, html);
+}
+// Plantilla de dispersión para el banco (contratos). Formato genérico: CLABE, beneficiario, importe, referencia.
+function plantillaBanco(nid) {
+  const n = DB.nominas.find(x => x.id === nid), rs = recibosImpresion(n).filter(r => (r.detalle.modalidad || NOM.modalidad(emp(r.empleado_id) || {})) !== 'honorarios' && num(r.neto) > 0);
+  if (!rs.length) return toast('No hay empleados por contrato en esta nómina', 'warning');
+  const sinCuenta = rs.filter(r => !/^\d{18}$/.test(emp(r.empleado_id)?.clabe || ''));
+  const ref = ('NOM' + n.folio.replace(/\D/g, '') + n.fecha_fin.replace(/-/g, '').slice(2)).slice(0, 20);
+  const filas = rs.map((r, i) => { const e = emp(r.empleado_id) || {}; return { 'No.': i + 1, 'CLABE / Cuenta': e.clabe || '', 'Banco': e.banco || '', 'Beneficiario': (e.nombre || r.detalle.nombre || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().slice(0, 40), 'RFC': e.rfc || '', 'Importe': num(r.neto), 'Referencia': ref, 'Concepto': ('NOMINA ' + n.fecha_ini.slice(8) + '-' + n.fecha_fin.slice(8) + ' ' + MES[+n.fecha_fin.slice(5, 7) - 1].toUpperCase()).slice(0, 30) }; });
+  const tot = filas.reduce((a, x) => a + x.Importe, 0);
+  if (window.__NOM_DEMO || !window.XLSX) {
+    return modal('Plantilla del banco · ' + n.folio, `${sinCuenta.length ? `<div class="errbox">Sin CLABE válida: ${sinCuenta.map(r => esc(corto(r.detalle.nombre))).join(', ')}. Captúrala en su ficha.</div>` : ''}
+      <div class="tc" style="overflow-x:auto"><table><thead><tr>${Object.keys(filas[0]).map(k => `<th>${k}</th>`).join('')}</tr></thead><tbody>${filas.map(f => `<tr>${Object.values(f).map(v => `<td class="${typeof v === 'number' ? 'tr amt' : 'mono mini'}">${typeof v === 'number' && v > 50 ? $$(v) : esc(v)}</td>`).join('')}</tr>`).join('')}
+      <tr><td colspan="5"><b>Total a dispersar</b></td><td class="tr amt"><b>${$$(tot)}</b></td><td colspan="2"></td></tr></tbody></table></div>
+      <div class="mini" style="margin-top:8px">En la app se descarga en Excel y CSV. Dime tu banco para dejarla con el formato exacto de su layout.</div>`, '', 'xl');
+  }
+  if (sinCuenta.length) toast('Sin CLABE válida: ' + sinCuenta.map(r => corto(r.detalle.nombre)).join(', '), 'warning');
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([...filas, { 'Beneficiario': 'TOTAL', 'Importe': Math.round(tot * 100) / 100 }]), 'Dispersion');
+  XLSX.writeFile(wb, `Dispersion_${n.folio}_${n.fecha_fin}.xlsx`);
+  const csv = filas.map(f => [f['CLABE / Cuenta'], f.Beneficiario, f.Importe.toFixed(2), f.Referencia, f.Concepto].join(',')).join('\r\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `Dispersion_${n.folio}_${n.fecha_fin}.csv`; a.click();
 }
 function imprimirReporte(nid) {
   const n = DB.nominas.find(x => x.id === nid), rs = recibosImpresion(n);
@@ -2172,86 +2262,159 @@ function exportNomina(nid) {
   XLSX.writeFile(wb, `Nomina_${n.folio}_${n.fecha_ini}_${n.fecha_fin}.xlsx`);
 }
 
-// ══ EMPLEADOS ═══════════════════════════════════
-const SENSIBLES = ['salario_diario', 'salario_fiscal', 'bono_puntualidad', 'bono_asistencia', 'bono_no_fiscal', 'esquema', 'banco', 'clabe', 'rfc', 'nss', 'curp', 'fecha_ingreso', 'retener_isr', 'retener_imss'];
+// ══ RECIBOS ═════════════════════════════════════
+function vRecibos() {
+  const fE = VIEW.recEmp || '';
+  const L = DB.nominas.filter(n => n.estado !== 'cancelada').sort((a, b) => b.fecha_ini.localeCompare(a.fecha_ini));
+  const filas = [];
+  for (const n of L) for (const r of DB.recibos.filter(r => r.nomina_id === n.id)) if (!fE || r.empleado_id === fE) filas.push({ n, r });
+  const emps = DB.empleados.filter(e => DB.recibos.some(r => r.empleado_id === e.id));
+  setMain(`
+  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Recibos</div><div class="psub">Recibos de nómina (contrato) y comprobantes de pago por honorarios. Se generan al guardar el cálculo de cada nómina; imprímelos para firma.</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><select class="fsel" onchange="VIEW.recEmp=this.value;render()"><option value="">Todos los empleados</option>${emps.map(e => `<option value="${e.id}" ${e.id === fE ? 'selected' : ''}>${esc(e.nombre)}</option>`).join('')}</select>
+      <button class="btn btn-p solo-cap" onclick="goTab('nom')">Calcular una nómina</button></div></div>
+  ${!fE && L.length ? `<div class="tc" style="margin-bottom:18px"><div class="ttb"><b>Por nómina</b></div><table><thead><tr><th>Folio</th><th>Tipo</th><th>Periodo</th><th>Estado</th><th class="tr">Recibos</th><th class="tr">Neto</th><th></th></tr></thead><tbody>
+    ${L.map(n => `<tr><td class="mono">${esc(n.folio)}</td><td>${TIPO_NOM[n.tipo]}</td><td>${perTxt(n.fecha_ini, n.fecha_fin)}</td><td>${estadoBadge(n.estado)}</td><td class="tr mono">${DB.recibos.filter(r => r.nomina_id === n.id).length}</td><td class="tr amt">${$$(n.neto)}</td>
+      <td><div class="rowact"><button class="btn btn-p btn-sm" onclick="imprimirRecibos('${n.id}')">🖨 Todos los recibos</button><button class="btn btn-s btn-sm" onclick="abrirNomina('${n.id}')">Abrir</button></div></td></tr>`).join('')}</tbody></table></div>` : ''}
+  <div class="tc"><div class="ttb"><b>${fE ? esc(nomEmp(fE)) : 'Por empleado'}</b></div>
+  ${filas.length ? `<table><thead><tr><th>Empleado</th><th>Tipo de recibo</th><th>Nómina</th><th>Periodo</th><th class="tr">Neto</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${filas.map(({ n, r }) => { const h = (r.detalle.modalidad || NOM.modalidad(emp(r.empleado_id) || {})) === 'honorarios'; return `<tr><td>${esc(corto(r.detalle.nombre || nomEmp(r.empleado_id)))}</td><td>${h ? '<span class="bdg bdg-a1">Honorarios</span>' : '<span class="bdg bdg-aut">Nómina</span>'}</td>
+      <td class="mono">${esc(n.folio)}</td><td>${perTxt(n.fecha_ini, n.fecha_fin)}</td><td class="tr amt">${$$(r.neto)}</td><td>${n.estado === 'autorizada' ? egresoTxt(r) : estadoBadge(n.estado)}</td>
+      <td><button class="btn btn-s btn-sm" onclick="imprimirRecibos('${n.id}','${r.empleado_id}')">🖨 Recibo</button></td></tr>`; }).join('')}</tbody></table>`
+    : '<div class="emp"><div class="ic">▤</div>Aún no hay recibos. Crea la nómina de la quincena en Nóminas y guarda el cálculo: los recibos se generan solos.</div>'}</div>`);
+}
+
+// ══ EMPLEADOS (ficha del administrador) ═════════
+const SENSIBLES = ['salario_diario', 'salario_fiscal', 'bono_puntualidad', 'bono_asistencia', 'bono_no_fiscal', 'esquema', 'modalidad', 'banco', 'clabe', 'rfc', 'nss', 'curp', 'fecha_ingreso', 'retener_isr', 'retener_imss', 'dias_aguinaldo', 'prima_vacacional', 'vac_extra'];
+const MOD_BDG = m => `<span class="bdg ${m === 'honorarios' ? 'bdg-a1' : 'bdg-aut'}">${esc(NOM.MODALIDADES[m] || m)}</span>`;
 function vEmpleados() {
+  if (VIEW.empId !== undefined && VIEW.empId !== null) return vFicha();
   const L = DB.empleados.filter(e => VIEW.empBajas ? !e.activo : e.activo);
   const bio = id => DB.mapeo.filter(m => m.empleado_id === id && m.bio_id).map(m => m.bio_id).join(', ');
+  const nC = L.filter(e => !NOM.esHon(e)).length, nH = L.filter(e => NOM.esHon(e)).length;
   setMain(`
-  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Empleados</div><div class="psub">Salario diario precargado, horario, bonos y datos de pago. Los cambios marcados con 🔒 requieren doble PIN.</div></div>
-    <div style="display:flex;gap:8px"><label class="chip ${VIEW.empBajas ? 'act' : ''}" onclick="VIEW.empBajas=!VIEW.empBajas;render()">Bajas</label><button class="btn btn-p solo-cap" onclick="editarEmpleado()">+ Nuevo empleado</button></div></div>
-  <div class="tc"><table><thead><tr><th>Empleado</th><th>Esquema</th><th>Sede</th><th class="tr">Salario diario</th><th class="tr">Quincena</th><th class="tr">Bonos</th><th>Horario</th><th>Antigüedad</th><th>Checador</th></tr></thead><tbody>
-  ${L.map(e => { const a = NOM.antiguedad(e.fecha_ingreso, hoy()); const b = num(e.bono_puntualidad) + num(e.bono_asistencia) + num(e.bono_no_fiscal); return `<tr class="clk" onclick="editarEmpleado('${e.id}')">
-    <td><b>${esc(e.nombre)}</b><div class="mini">${esc(e.puesto || '')}</div></td><td><span class="bdg bdg-cat">${esc(e.esquema || '')}</span></td><td>${esc(e.sede || '')}</td>
-    <td class="tr amt">${$$(e.salario_diario)}</td><td class="tr amt">${$$(num(e.salario_diario) * REG().dias_quincena)}</td><td class="tr amt">${b ? $$(b) : '—'}</td>
-    <td class="mini">${e.controla_asistencia === false ? 'Sin control' : `${esc(e.horario?.entrada || '')}–${esc(e.horario?.salida || '')} · ${(e.horario?.dias || []).map(d => DIAS[d][0]).join('')}`}</td>
-    <td class="mini">${a ? `${a.anios} a · ${fmtD(e.fecha_ingreso)}` : '<span style="color:var(--wn)">Sin fecha de ingreso</span>'}</td><td class="mono mini">${bio(e.id) || (e.controla_asistencia === false ? '' : '<span style="color:var(--wn)">—</span>')}</td></tr>`; }).join('') || '<tr><td colspan="9"><div class="emp">Sin empleados.</div></td></tr>'}
+  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Empleados</div><div class="psub">${nC} con contrato · ${nH} por honorarios. Abre la ficha para definir modalidad, inicio de labores, sueldo por día, horario y prestaciones.</div></div>
+    <div style="display:flex;gap:8px"><label class="chip ${VIEW.empBajas ? 'act' : ''}" onclick="VIEW.empBajas=!VIEW.empBajas;render()">Bajas</label><button class="btn btn-p solo-cap" onclick="abrirFicha('')">+ Nuevo empleado</button></div></div>
+  <div class="tc"><table><thead><tr><th>Empleado</th><th>Modalidad</th><th>Inicio de labores</th><th class="tr">Sueldo por día</th><th class="tr">Quincena</th><th>Horario</th><th>Checador</th><th></th></tr></thead><tbody>
+  ${L.map(e => { const a = NOM.antiguedad(e.fecha_ingreso, hoy()); const m = NOM.modalidad(e); return `<tr class="clk" onclick="abrirFicha('${e.id}')">
+    <td><b>${esc(e.nombre)}</b><div class="mini">${esc(e.puesto || '')} · ${esc(e.sede || '')}</div></td><td>${MOD_BDG(m)}${e.esquema === 'comisiones' ? '<div class="mini">con comisiones</div>' : ''}</td>
+    <td class="mini">${a ? `${fmtD(e.fecha_ingreso)}<br>${a.anios} año(s)` : '<span style="color:var(--wn)">Falta capturar</span>'}</td>
+    <td class="tr amt">${$$(e.salario_diario)}</td><td class="tr amt">${m === 'honorarios' ? '<span class="mini">por día laborado</span>' : $$(num(e.salario_diario) * REG().dias_quincena)}</td>
+    <td class="mini">${e.controla_asistencia === false ? 'Sin checador' : `${esc(e.horario?.entrada || '')}–${esc(e.horario?.salida || '')} · ${(e.horario?.dias || []).map(d => DIAS[d][0]).join('')}`}</td>
+    <td class="mono mini">${bio(e.id) || (e.controla_asistencia === false ? '' : '<span style="color:var(--wn)">sin ID</span>')}</td>
+    <td><button class="btn btn-s btn-sm">Abrir ficha</button></td></tr>`; }).join('') || '<tr><td colspan="8"><div class="emp">Sin empleados.</div></td></tr>'}
   </tbody></table></div>`);
 }
-function editarEmpleado(id) {
-  const e = id ? emp(id) : { activo: true, esquema: 'fijo', sede: 'Tacámbaro', horario: { ...NOM.DEF_HORARIO }, controla_asistencia: true, forma_pago: 'transferencia' };
-  const H = { ...NOM.DEF_HORARIO, ...(e.horario || {}) }, sab = (H.por_dia || {})[6] || {};
+function abrirFicha(id) { VIEW.empId = id || ''; if (tab !== 'emp') goTab('emp'); else render(); window.scrollTo(0, 0); }
+function vFicha() {
+  const id = VIEW.empId;
+  const e = id ? emp(id) : { activo: true, modalidad: 'indeterminado', esquema: 'fijo', sede: 'Tacámbaro', horario: { ...NOM.DEF_HORARIO }, controla_asistencia: true, forma_pago: 'transferencia' };
+  if (!e) { VIEW.empId = null; return vEmpleados(); }
+  const R = REG(), H = { ...NOM.DEF_HORARIO, ...(e.horario || {}) }, sab = (H.por_dia || {})[6] || {};
   const ro = !puedeCap() ? 'disabled' : '';
+  const m = NOM.modalidad(e);
   const sug = id ? NOM.sugerirHorario(e, DB.checadas) : null;
-  const sv = id ? NOM.saldoVacaciones(e, DB.incidencias, hoy()) : null;
-  const f = (k, l, t = 'text', extra = '') => `<div class="fgrp ${SENSIBLES.includes(k) && id ? 'sens' : ''}"><label>${l}</label><input type="${t}" id="ee_${k}" value="${esc(e[k] ?? '')}" ${ro} ${extra}></div>`;
-  modal(id ? e.nombre : 'Nuevo empleado', `
-    ${!e.activo ? `<div class="errbox">Baja: ${fmtD(e.fecha_baja)} · ${esc(e.motivo_baja || '')}</div>` : ''}
-    <div class="dlbl" style="margin-bottom:8px">Datos</div>
-    <div class="fgrd">${f('nombre', 'Nombre completo')}${f('puesto', 'Puesto')}
+  const sv = id && m !== 'honorarios' ? NOM.saldoVacaciones(e, DB.incidencias, hoy()) : null;
+  const f = (k, l, t = 'text', extra = '', hint = '') => `<div class="fgrp ${SENSIBLES.includes(k) && id ? 'sens' : ''}"><label>${l}</label><input type="${t}" id="ee_${k}" value="${esc(e[k] ?? '')}" ${ro} ${extra}>${hint ? `<span class="fhint">${hint}</span>` : ''}</div>`;
+  const recs = id ? DB.recibos.filter(r => r.empleado_id === id).map(r => ({ r, n: DB.nominas.find(n => n.id === r.nomina_id) })).filter(x => x.n && x.n.estado !== 'cancelada').sort((a, b) => b.n.fecha_ini.localeCompare(a.n.fecha_ini)) : [];
+  setMain(`
+  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit"><span class="lk" style="text-decoration:none" onclick="VIEW.empId=null;render()">Empleados</span> › ${esc(id ? e.nombre : 'Nuevo empleado')}</div>
+    <div class="psub">${id ? MOD_BDG(m) + (e.activo ? '' : ` <span class="bdg bdg-can">Baja ${fmtD(e.fecha_baja)}</span>`) : 'Captura la ficha y guarda con PIN'} ${id ? ' · los campos con 🔒 requieren doble PIN' : ''}</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">${puedeCap() ? `${id && e.activo ? `<button class="btn btn-s btn-sm" onclick="nuevoPrestamo('${id}')">+ Préstamo</button><button class="btn btn-s btn-sm" onclick="nuevoMovimiento('${id}','percepcion','','comision')">+ Comisión / bono</button><button class="btn btn-d btn-sm" onclick="bajaEmpleado('${id}')">Dar de baja</button>` : ''}${id && !e.activo ? `<button class="btn btn-s btn-sm" onclick="reactivarEmpleado('${id}')">Reactivar</button>` : ''}<button class="btn btn-p" onclick="guardarEmpleado('${id || ''}')">Guardar con PIN</button>` : ''}</div></div>
+  <div class="cfgg">
+    <div class="cfg-section"><h3>Datos personales</h3><div class="body"><div class="fgrd">
+      ${f('nombre', 'Nombre completo')}${f('puesto', 'Puesto')}
       <div class="fgrp"><label>Sede</label><select id="ee_sede" ${ro}><option ${e.sede === 'Tacámbaro' ? 'selected' : ''}>Tacámbaro</option><option ${e.sede === 'Morelia' ? 'selected' : ''}>Morelia</option></select></div>
-      ${f('telefono', 'Teléfono', 'tel')}${f('curp', 'CURP')}${f('rfc', 'RFC')}${f('nss', 'NSS')}${f('email', 'Correo', 'email')}</div>
-    <div class="dlbl" style="margin:18px 0 8px">Contrato y pago diario</div>
-    <div class="fgrd">
-      <div class="fgrp ${id ? 'sens' : ''}"><label>Esquema</label><select id="ee_esquema" ${ro}>${['fijo', 'honorarios', 'comisiones'].map(x => `<option ${e.esquema === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
-      ${f('fecha_ingreso', 'Fecha de ingreso', 'date')}
-      ${f('salario_diario', 'Salario diario', 'number', 'step="0.01" oninput="document.getElementById(\'eeQ\').textContent=$$(num(this.value)*REG().dias_quincena)"')}
-      <div class="fgrp"><label>Equivale por quincena</label><div class="mono" style="padding:9px 0" id="eeQ">${$$(num(e.salario_diario) * REG().dias_quincena)}</div></div>
-      ${f('bono_puntualidad', 'Bono de puntualidad (quincenal)', 'number', 'step="0.01"')}${f('bono_asistencia', 'Bono de asistencia (quincenal)', 'number', 'step="0.01"')}
-      ${f('bono_no_fiscal', 'Bono adicional fijo (quincenal)', 'number', 'step="0.01"')}${f('salario_fiscal', 'Salario fiscal quincenal (base ISR/IMSS)', 'number', 'step="0.01"')}
+      ${f('telefono', 'Teléfono', 'tel')}${f('rfc', 'RFC')}${f('curp', 'CURP')}${f('nss', 'NSS')}${f('email', 'Correo (para pedir factura)', 'email')}</div></div></div>
+    <div class="cfg-section"><h3>Modalidad de empleo y sueldo</h3><div class="body"><div class="fgrd">
+      <div class="fgrp ${id ? 'sens' : ''}"><label>Modalidad de empleo</label><select id="ee_modalidad" ${ro} onchange="fichaModalidad()">${Object.entries(NOM.MODALIDADES).map(([k, v]) => `<option value="${k}" ${m === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      ${f('fecha_ingreso', 'Inicio de labores', 'date')}
+      <div id="eeFinX">${f('fecha_fin_contrato', 'Fin del contrato', 'date')}</div>
+      <div class="fgrp ${id ? 'sens' : ''}"><label>Comisiones</label><select id="ee_esquema" ${ro}><option value="fijo" ${e.esquema !== 'comisiones' ? 'selected' : ''}>No recibe comisiones</option><option value="comisiones" ${e.esquema === 'comisiones' ? 'selected' : ''}>Recibe comisiones (no integran salario)</option></select></div>
+      ${f('salario_diario', 'Sueldo por día', 'number', 'step="0.01" oninput="fichaModalidad()"')}
+      <div class="fgrp"><label id="eeQl">Equivale por quincena</label><div class="mono" style="padding:9px 0" id="eeQ"></div></div>
     </div>
-    <div class="chkrow" style="margin-top:10px"><label class="${id ? 'sens' : ''}"><input type="checkbox" id="ee_retener_isr" ${e.retener_isr ? 'checked' : ''} ${ro}> Retener ISR</label><label><input type="checkbox" id="ee_retener_imss" ${e.retener_imss ? 'checked' : ''} ${ro}> Retener IMSS (cuota obrera)</label></div>
-    <div class="dlbl" style="margin:18px 0 8px">Pago</div>
-    <div class="fgrd"><div class="fgrp"><label>Forma de pago</label><select id="ee_forma_pago" ${ro}>${['transferencia', 'efectivo', 'cheque'].map(x => `<option ${e.forma_pago === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
-      ${f('banco', 'Banco')}${f('clabe', 'CLABE', 'text', 'inputmode="numeric" maxlength="18"')}</div>
-    <div class="dlbl" style="margin:18px 0 8px">Horario y asistencia ${sug ? `<span class="lk solo-cap" style="font-weight:400;text-transform:none;letter-spacing:0" onclick="aplicarSugerencia(${esc(JSON.stringify(sug))})">Sugerido por el checador: ${sug.entrada}–${sug.salida}</span>` : ''}</div>
-    <div class="fgrd">
-      <div class="fgrp"><label>Entrada</label><input type="time" id="eh_e" value="${esc(H.entrada)}" ${ro}></div><div class="fgrp"><label>Salida</label><input type="time" id="eh_s" value="${esc(H.salida)}" ${ro}></div>
-      <div class="fgrp"><label>Minutos de comida</label><input type="number" id="eh_c" value="${H.comida_min}" ${ro}></div>
-      <div class="fgrp"><label>Sábado: salida distinta (opcional)</label><input type="time" id="eh_ss" value="${esc(sab.salida || '')}" ${ro}></div></div>
-    <div class="chkrow" style="margin-top:10px">${[1, 2, 3, 4, 5, 6, 0].map(d => `<label><input type="checkbox" class="ehD" value="${d}" ${(H.dias || []).includes(d) ? 'checked' : ''} ${ro}> ${DIAS[d]}</label>`).join('')}
-      <label><input type="checkbox" id="ee_controla_asistencia" ${e.controla_asistencia !== false ? 'checked' : ''} ${ro}> Controla asistencia con checador</label></div>
-    ${id ? `<div class="dlbl" style="margin:18px 0 8px">Checador</div><div class="mini">IDs vinculados: <b class="mono">${DB.mapeo.filter(m => m.empleado_id === id && m.bio_id).map(m => esc(m.bio_id + ' (' + m.nombre_pdf + ')')).join(', ') || '—'}</b> <span class="lk solo-cap" onclick="vincularModal()">Vincular</span></div>` : ''}
-    ${sv ? `<div class="dlbl" style="margin:18px 0 8px">Vacaciones</div><div class="mini">${sv.anios} año(s) de antigüedad · derecho ${sv.derecho} días · tomados ${sv.tomados} · disponibles <b>${sv.disponibles}</b> · próximo aniversario ${fmtD(sv.siguiente)} (${sv.proximo} días)</div>` : ''}
-    <div class="fgrp" style="margin-top:14px"><label>Notas</label><textarea id="ee_notas" ${ro}>${esc(e.notas || '')}</textarea></div>`,
-    puedeCap() ? `${id && e.activo ? `<button class="btn btn-d" style="margin-right:auto" onclick="bajaEmpleado('${id}')">Dar de baja</button>` : ''}${id && !e.activo ? `<button class="btn btn-s" style="margin-right:auto" onclick="reactivarEmpleado('${id}')">Reactivar</button>` : ''}
-      ${id && e.activo ? `<button class="btn btn-s" onclick="nuevoPrestamo('${id}')">+ Préstamo</button><button class="btn btn-s" onclick="nuevoMovimiento('${id}','percepcion','','comision')">+ Comisión</button>` : ''}<button class="btn btn-s" onclick="CM('mGen')">Cancelar</button><button class="btn btn-p" onclick="guardarEmpleado('${id || ''}')">Guardar con PIN</button>` : `<button class="btn btn-p" onclick="CM('mGen')">Cerrar</button>`, 'lg');
+    <div class="okbox" style="margin:12px 0 0" id="eeModTxt"></div></div></div>
+    <div class="cfg-section"><h3>Pago</h3><div class="body"><div class="fgrd">
+      <div class="fgrp"><label>Forma de pago</label><select id="ee_forma_pago" ${ro}>${['transferencia', 'efectivo', 'cheque'].map(x => `<option ${e.forma_pago === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+      ${f('banco', 'Banco')}${f('clabe', 'CLABE (18 dígitos)', 'text', 'inputmode="numeric" maxlength="18"')}</div>
+      <div class="mini" style="margin-top:8px" id="eePagoTxt"></div></div></div>
+    <div class="cfg-section"><h3>Horario ${sug ? `<span class="lk solo-cap" style="font-weight:400;font-size:12px" onclick="aplicarSugerencia(${esc(JSON.stringify(sug))})">usar el del checador: ${sug.entrada}–${sug.salida}</span>` : ''}</h3><div class="body">
+      <div class="fgrd">
+        <div class="fgrp"><label>Entrada</label><input type="time" id="eh_e" value="${esc(H.entrada)}" ${ro}></div><div class="fgrp"><label>Salida</label><input type="time" id="eh_s" value="${esc(H.salida)}" ${ro}></div>
+        <div class="fgrp"><label>Minutos de comida</label><input type="number" id="eh_c" value="${H.comida_min}" ${ro}></div>
+        <div class="fgrp"><label>Sábado: salida distinta (opcional)</label><input type="time" id="eh_ss" value="${esc(sab.salida || '')}" ${ro}></div></div>
+      <div class="dlbl" style="margin:12px 0 6px">Días que trabaja</div>
+      <div class="chkrow">${[1, 2, 3, 4, 5, 6, 0].map(d => `<label><input type="checkbox" class="ehD" value="${d}" ${(H.dias || []).includes(d) ? 'checked' : ''} ${ro}> ${DIAS[d]}</label>`).join('')}</div>
+      <div class="chkrow" style="margin-top:8px"><label><input type="checkbox" id="ee_controla_asistencia" ${e.controla_asistencia !== false ? 'checked' : ''} ${ro}> Controla asistencia con el checador</label></div>
+      ${id ? `<div class="mini" style="margin-top:8px">ID en el checador: <b class="mono">${DB.mapeo.filter(x => x.empleado_id === id && x.bio_id).map(x => esc(x.bio_id + ' (' + x.nombre_pdf + ')')).join(', ') || '—'}</b> <span class="lk solo-cap" onclick="vincularModal()">vincular</span></div>` : ''}</div></div>
+    <div class="cfg-section" id="eePrest"><h3>Prestaciones</h3><div class="body">
+      <div id="eePrestHon" class="warnbox" style="display:none;margin:0">Honorarios: contrato civil, sin aguinaldo, vacaciones, prima vacacional, IMSS ni finiquito laboral.</div>
+      <div id="eePrestCon"><div class="fgrd">
+        ${f('dias_aguinaldo', 'Días de aguinaldo', 'number', `min="${R.dias_aguinaldo}" placeholder="${R.dias_aguinaldo} (ley)"`, 'Vacío = ' + R.dias_aguinaldo + ' días de ley')}
+        ${f('prima_vacacional', 'Prima vacacional %', 'number', `min="${R.prima_vacacional}" placeholder="${R.prima_vacacional} (ley)"`, 'Vacío = ' + R.prima_vacacional + '% de ley')}
+        ${f('vac_extra', 'Días de vacaciones adicionales a la ley', 'number', 'min="0" placeholder="0"')}
+        ${f('bono_puntualidad', 'Bono de puntualidad (quincenal)', 'number', 'step="0.01"')}
+        ${f('bono_asistencia', 'Bono de asistencia (quincenal)', 'number', 'step="0.01"')}
+        ${f('bono_no_fiscal', 'Otro bono fijo (quincenal)', 'number', 'step="0.01"')}
+        ${f('salario_fiscal', 'Salario fiscal quincenal (base ISR/IMSS)', 'number', 'step="0.01"')}</div>
+      <div class="chkrow" style="margin-top:10px"><label class="${id ? 'sens' : ''}"><input type="checkbox" id="ee_retener_isr" ${e.retener_isr ? 'checked' : ''} ${ro}> Retener ISR</label><label><input type="checkbox" id="ee_retener_imss" ${e.retener_imss ? 'checked' : ''} ${ro}> Retener IMSS (cuota obrera)</label></div>
+      ${sv ? `<div class="mini" style="margin-top:10px">Vacaciones: ${sv.anios} año(s) · derecho ${sv.derecho} días · tomados ${sv.tomados} · disponibles <b>${sv.disponibles}</b> · siguiente periodo ${fmtD(sv.siguiente)}</div>` : ''}</div></div></div>
+  </div>
+  <div class="fgrp" style="margin-top:18px"><label>Notas</label><textarea id="ee_notas" ${ro}>${esc(e.notas || '')}</textarea></div>
+  ${id ? `<div class="tc" style="margin-top:20px"><div class="ttb"><b>Recibos</b><span class="mini">${m === 'honorarios' ? 'comprobantes de pago por honorarios' : 'recibos de nómina'}</span></div>
+    ${recs.length ? `<table><thead><tr><th>Folio</th><th>Tipo</th><th>Periodo</th><th>Estado</th><th class="tr">Neto</th><th></th></tr></thead><tbody>
+    ${recs.map(({ r, n }) => `<tr><td class="mono">${esc(n.folio)}</td><td>${TIPO_NOM[n.tipo]}</td><td>${perTxt(n.fecha_ini, n.fecha_fin)}</td><td>${estadoBadge(n.estado)}</td><td class="tr amt">${$$(r.neto)}</td>
+      <td><button class="btn btn-s btn-sm" onclick="imprimirRecibos('${n.id}','${id}')">🖨 Recibo</button></td></tr>`).join('')}</tbody></table>` : '<div class="emp">Aún no tiene recibos en el sistema nuevo.</div>'}</div>` : ''}`);
+  fichaModalidad();
+}
+function fichaModalidad() {
+  const m = val('ee_modalidad'), sd = num(val('ee_salario_diario')), hon = m === 'honorarios';
+  const sh = (id, on) => { const x = document.getElementById(id); if (x) x.style.display = on ? '' : 'none'; };
+  sh('eeFinX', m === 'determinado' || m === 'prueba');
+  sh('eePrestHon', hon); sh('eePrestCon', !hon);
+  document.getElementById('eeQl').textContent = hon ? 'Ejemplo: 13 días laborados' : 'Equivale por quincena';
+  document.getElementById('eeQ').textContent = $$(sd * (hon ? 13 : REG().dias_quincena));
+  document.getElementById('eeModTxt').textContent = hon
+    ? 'Se paga por día laborado en la misma quincena (según el checador). El pago va a Finanzas por transferencia a su nombre y queda en "Facturas por solicitar" hasta que entregue su factura.'
+    : 'Se paga la quincena completa. Las faltas, retardos e incidencias se aplican en la quincena siguiente (pago retroactivo). Se paga con la plantilla del banco en un solo egreso de dispersión.';
+  document.getElementById('eePagoTxt').textContent = hon ? 'La CLABE y el RFC se usan para darlo de alta como proveedor en COE Finanzas.' : 'La CLABE se usa en la plantilla de dispersión del banco.';
 }
 function aplicarSugerencia(s) {
   document.getElementById('eh_e').value = s.entrada; document.getElementById('eh_s').value = s.salida;
   if (s.dias?.length) document.querySelectorAll('.ehD').forEach(c => c.checked = s.dias.includes(+c.value));
-  toast('Horario sugerido aplicado; revisa y guarda', 'info');
+  toast('Horario del checador aplicado; revisa y guarda', 'info');
 }
+// compatibilidad con llamadas anteriores
+function editarEmpleado(id) { abrirFicha(id || ''); }
 async function guardarEmpleado(id) {
   const e = id ? emp(id) : {};
   const d = { id: id || null };
-  const txt = ['nombre', 'puesto', 'sede', 'telefono', 'curp', 'rfc', 'nss', 'email', 'esquema', 'fecha_ingreso', 'forma_pago', 'banco', 'clabe', 'notas'];
-  const nums = ['salario_diario', 'bono_puntualidad', 'bono_asistencia', 'bono_no_fiscal', 'salario_fiscal'];
-  for (const k of txt) { const v = val('ee_' + k).trim(); if (!id || v !== String(e[k] ?? '')) d[k] = v; }
-  for (const k of nums) { const v = val('ee_' + k); if (!id || num(v) !== num(e[k]) || (v === '' && e[k] != null && k === 'salario_fiscal')) d[k] = v === '' ? '' : String(num(v)); }
+  const txt = ['nombre', 'puesto', 'sede', 'telefono', 'curp', 'rfc', 'nss', 'email', 'esquema', 'modalidad', 'fecha_ingreso', 'fecha_fin_contrato', 'forma_pago', 'banco', 'clabe', 'notas'];
+  const nums = ['salario_diario', 'bono_puntualidad', 'bono_asistencia', 'bono_no_fiscal', 'salario_fiscal', 'dias_aguinaldo', 'prima_vacacional', 'vac_extra'];
+  const cur = k => k === 'modalidad' ? NOM.modalidad(e) : String(e[k] ?? '');
+  for (const k of txt) { const v = val('ee_' + k).trim(); if (!id || v !== cur(k)) d[k] = v; }
+  for (const k of nums) { const v = val('ee_' + k); if (!id || num(v) !== num(e[k]) || (v === '' && e[k] != null)) d[k] = v === '' ? '' : String(num(v)); }
   for (const k of ['retener_isr', 'retener_imss', 'controla_asistencia']) { const v = chk('ee_' + k); if (!id || v !== !!(e[k] ?? (k === 'controla_asistencia'))) d[k] = v; }
   d.nombre = val('ee_nombre').trim();
   if (!d.nombre) return toast('Falta el nombre', 'warning');
-  if (!id && !(num(val('ee_salario_diario')) > 0)) return toast('Indica el salario diario', 'warning');
-  if (d.clabe && !/^\d{18}$/.test(d.clabe)) return toast('La CLABE debe tener 18 dígitos', 'warning');
+  if (!(num(val('ee_salario_diario')) > 0)) return toast('Indica el sueldo por día', 'warning');
+  if (!val('ee_fecha_ingreso')) return toast('Indica la fecha de inicio de labores', 'warning');
+  const cl = val('ee_clabe').trim();
+  if (cl && !/^\d{18}$/.test(cl)) return toast('La CLABE debe tener 18 dígitos', 'warning');
+  if (val('ee_modalidad') === 'honorarios' && val('ee_forma_pago') === 'transferencia' && !cl) return toast('Honorarios se paga por transferencia: captura la CLABE', 'warning');
+  const R = REG();
+  if (d.dias_aguinaldo && num(d.dias_aguinaldo) < R.dias_aguinaldo) return toast(`El aguinaldo no puede ser menor a ${R.dias_aguinaldo} días`, 'warning');
+  if (d.prima_vacacional && num(d.prima_vacacional) < R.prima_vacacional) return toast(`La prima vacacional no puede ser menor a ${R.prima_vacacional}%`, 'warning');
   const dias = [...document.querySelectorAll('.ehD:checked')].map(c => +c.value).sort();
+  if (!dias.length) return toast('Marca los días que trabaja', 'warning');
   const hor = { entrada: val('eh_e') || '09:00', salida: val('eh_s') || '18:00', comida_min: num(val('eh_c')) || 0, dias };
   if (val('eh_ss')) hor.por_dia = { 6: { salida: val('eh_ss') } };
   if (JSON.stringify(hor) !== JSON.stringify(e.horario || null)) d.horario = hor;
   const sens = id ? SENSIBLES.filter(k => k in d) : [];
-  const r = await firmar('nom_empleado_guardar', { p_datos: d }, { titulo: id ? 'Guardar cambios' : 'Alta de empleado', sub: d.nombre + (sens.length ? ' · cambios sensibles: ' + sens.join(', ') : ''), doble: sens.length ? true : 'auto', sub2: 'Cambio sensible (' + sens.join(', ') + ')' });
+  const r = await firmar('nom_empleado_guardar', { p_datos: d }, { titulo: id ? 'Guardar ficha' : 'Alta de empleado', sub: d.nombre + (sens.length ? ' · cambios sensibles: ' + sens.join(', ') : ''), doble: sens.length ? true : 'auto', sub2: 'Cambio sensible (' + sens.join(', ') + ')' });
   if (!r) return;
-  CM('mGen'); toast('Empleado guardado', 'success'); await recargar();
+  toast('Ficha guardada', 'success'); VIEW.empId = r.id; await recargar();
 }
 function bajaEmpleado(id) {
   const e = emp(id);
@@ -2435,17 +2598,18 @@ async function anularPrestamo(id) {
 // ══ PRESTACIONES ════════════════════════════════
 function vPrestaciones() {
   const R = REG(), y = hoy().slice(0, 4);
-  const V = activos().map(e => ({ e, s: NOM.saldoVacaciones(e, DB.incidencias, hoy()) }));
+  const CON = activos().filter(e => !NOM.esHon(e)), HON = activos().filter(e => NOM.esHon(e));
+  const V = CON.map(e => ({ e, s: NOM.saldoVacaciones(e, DB.incidencias, hoy()) }));
   const ctxA = { nomina: { fecha_ini: `${y}-01-01`, fecha_fin: `${y}-12-31` }, reglas: R, fiscal: FIS() };
-  const A = activos().map(e => NOM.reciboAguinaldo(e, ctxA));
+  const A = CON.map(e => NOM.reciboAguinaldo(e, ctxA));
   const totA = A.reduce((a, r) => a + r.percepciones, 0);
   const nomAg = DB.nominas.find(n => n.tipo === 'aguinaldo' && n.estado !== 'cancelada' && n.fecha_fin.startsWith(y));
   setMain(`
-  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Prestaciones</div><div class="psub">Vacaciones (LFT 2023), prima vacacional ${R.prima_vacacional}%, aguinaldo ${R.dias_aguinaldo} días y finiquitos.</div></div></div>
+  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Prestaciones</div><div class="psub">Personal con contrato: vacaciones (LFT 2023), prima vacacional, aguinaldo y finiquito. ${HON.length ? `Honorarios (${HON.map(e => esc(corto(e.nombre))).join(', ')}): sin prestaciones laborales.` : ''}</div></div></div>
   <div class="tc"><div class="ttb"><b>Vacaciones</b><span style="flex:1"></span><button class="btn btn-s btn-sm solo-cap" onclick="registrarVacaciones()">+ Registrar vacaciones</button><button class="btn btn-s btn-sm solo-cap" onclick="registrarVacaciones('vac_a_cuenta')">+ Día a cuenta de vacaciones</button></div>
   <table><thead><tr><th>Empleado</th><th>Ingreso</th><th class="tr">Antigüedad</th><th class="tr">Días por ley</th><th class="tr">Tomados</th><th class="tr">Disponibles</th><th>Próximo periodo</th></tr></thead><tbody>
   ${V.map(({ e, s }) => s ? `<tr><td>${esc(corto(e.nombre))}</td><td>${fmtD(e.fecha_ingreso)}</td><td class="tr mono">${s.anios} a</td><td class="tr mono">${s.derecho}</td><td class="tr mono">${s.tomados}</td><td class="tr mono"><b style="color:${s.disponibles ? 'var(--pr)' : ''}">${s.disponibles}</b></td><td class="mini">${fmtD(s.siguiente)} · ${s.proximo} días</td></tr>`
-    : `<tr><td>${esc(corto(e.nombre))}</td><td colspan="6" class="mini" style="color:var(--wn)">Captura la fecha de ingreso para calcular <span class="lk" onclick="editarEmpleado('${e.id}')">editar</span></td></tr>`).join('')}</tbody></table>
+    : `<tr><td>${esc(corto(e.nombre))}</td><td colspan="6" class="mini" style="color:var(--wn)">Captura el inicio de labores para calcular <span class="lk" onclick="abrirFicha('${e.id}')">abrir ficha</span></td></tr>`).join('')}</tbody></table>
   <div class="mini" style="padding:10px 16px">Días por ley: 1 año 12, 2 años 14, 3 años 16, 4 años 18, 5 años 20; de 6 a 10 años 22 y +2 cada 5 años. La prima vacacional se paga en la quincena en que se gozan.</div></div>
   <div class="tc" style="margin-top:20px"><div class="ttb"><b>Aguinaldo ${y}</b><span class="mini">proyección al 31 de diciembre · pago antes del 20 de diciembre</span><span style="flex:1"></span>
     ${nomAg ? `<button class="btn btn-s btn-sm" onclick="abrirNomina('${nomAg.id}')">Ver ${esc(nomAg.folio)}</button>` : `<button class="btn btn-p btn-sm solo-cap" onclick="nuevaNomina();setTimeout(()=>{document.getElementById('nnT').value='aguinaldo';nnTipo()},50)">Crear nómina de aguinaldo</button>`}</div>
@@ -2454,10 +2618,11 @@ function vPrestaciones() {
   <tr><td colspan="3"><b>Total estimado</b></td><td class="tr amt"><b>${$$(totA)}</b></td></tr></tbody></table></div>
   <div class="tc solo-cap" style="margin-top:20px"><div class="ttb"><b>Finiquito / liquidación</b></div><div class="pad" style="padding:16px">
     <div class="fgrd" style="grid-template-columns:repeat(3,1fr)">
-      <div class="fgrp"><label>Empleado</label><select id="fqE">${DB.empleados.filter(e => e.activo || (e.fecha_baja && NOM.diffDias(e.fecha_baja, hoy()) < 120)).map(e => `<option value="${e.id}" ${VIEW.finEmp === e.id ? 'selected' : ''}>${esc(e.nombre)}${e.activo ? '' : ' (baja)'}</option>`).join('')}</select></div>
-      <div class="fgrp"><label>Fecha de baja</label><input type="date" id="fqF" value="${VIEW.finFecha || hoy()}"></div>
+      <div class="fgrp"><label>Empleado</label><select id="fqE" onchange="fqDefaults()">${DB.empleados.filter(e => e.activo || (e.fecha_baja && NOM.diffDias(e.fecha_baja, hoy()) < 120)).map(e => `<option value="${e.id}" ${VIEW.finEmp === e.id ? 'selected' : ''}>${esc(e.nombre)}${e.activo ? '' : ' (baja)'}</option>`).join('')}</select></div>
+      <div class="fgrp"><label>Fecha de baja</label><input type="date" id="fqF" value="${VIEW.finFecha || hoy()}" onchange="fqDefaults()"></div>
       <div class="fgrp"><label>Motivo</label><select id="fqM">${[['renuncia', 'Renuncia voluntaria'], ['termino', 'Término de contrato'], ['despido', 'Despido justificado'], ['despido_injustificado', 'Despido injustificado (liquidación)']].map(([k, v]) => `<option value="${k}" ${VIEW.finMot === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-      <div class="fgrp"><label>Días de sueldo pendientes</label><input type="number" id="fqD" value="0" min="0"></div>
+      <div class="fgrp"><label>Días de sueldo pendientes</label><input type="number" id="fqD" value="0" min="0"><span class="fhint" id="fqDh"></span></div>
+      <div class="fgrp" id="fqFPx"><label>Faltas pendientes de descontar</label><input type="number" id="fqFP" value="0" min="0"><span class="fhint" id="fqFPh"></span></div>
       <div class="fgrp"><label>Adeudos a descontar</label><input type="number" id="fqA" value="0" step="0.01"></div>
       <div class="fgrp"><label>Concepto del adeudo</label><input type="text" id="fqC"></div></div>
     <div class="chkrow" style="margin-top:10px"><label><input type="checkbox" id="fqP" checked> Descontar saldo de préstamos pendientes</label><label><input type="checkbox" id="fq20"> Incluir 20 días por año (solo si procede, art. 50 LFT)</label></div>
@@ -2465,8 +2630,27 @@ function vPrestaciones() {
     <div style="margin-top:12px"><button class="btn btn-s" onclick="calcFiniquito()">Calcular</button></div>
     <div id="fqRes"></div></div></div>`);
   VIEW.finEmp = null; VIEW.finMot = null; VIEW.finFecha = null;
+  if (document.getElementById('fqE')) fqDefaults();
 }
-function opFiniquito() { return { fecha_baja: val('fqF'), motivo: val('fqM'), dias_pendientes: num(val('fqD')), descuentos: num(val('fqA')), descuentos_concepto: val('fqC'), veinte_dias: chk('fq20'), descontar_prestamos: chk('fqP') }; }
+// Propone días pendientes y faltas por descontar: los contratos cobran la quincena completa y sus faltas se aplican en la siguiente
+function fqDefaults() {
+  const e = emp(val('fqE')), f = val('fqF'); if (!e || !f) return;
+  const q = NOM.quincena(f), qa = NOM.quincena(NOM.addDays(q.ini, -1));
+  const pagada = DB.nominas.some(n => n.tipo === 'ordinaria' && n.estado === 'autorizada' && n.fecha_ini <= q.ini && n.fecha_fin >= q.ini && DB.recibos.some(r => r.nomina_id === n.id && r.empleado_id === e.id));
+  const hon = NOM.esHon(e);
+  let dias = pagada ? 0 : NOM.diffDias(q.ini, f) + 1;
+  if (hon && !pagada) dias = NOM.resumen(e, q.ini, f, DB.checadas, DB.incidencias, REG(), hoyCorte()).dias.filter(d => (d.laborable && d.trabajado) || d.estado === 'justificado').length;
+  document.getElementById('fqD').value = dias;
+  document.getElementById('fqDh').textContent = pagada ? 'La quincena de la baja ya se pagó' : hon ? `Días laborados del ${fmtD(q.ini)} al ${fmtD(f)}` : `Del ${fmtD(q.ini)} al ${fmtD(f)}, aún no pagados`;
+  document.getElementById('fqFPx').style.display = hon ? 'none' : '';
+  if (!hon) {
+    const desde = pagada ? q.ini : qa.ini;
+    const fa = NOM.resumen(e, desde, f, DB.checadas, DB.incidencias, REG(), hoyCorte()).faltas;
+    document.getElementById('fqFP').value = fa;
+    document.getElementById('fqFPh').textContent = `Faltas del ${fmtD(desde)} al ${fmtD(f)} que no alcanzaron a descontarse`;
+  }
+}
+function opFiniquito() { return { fecha_baja: val('fqF'), motivo: val('fqM'), dias_pendientes: num(val('fqD')), faltas_pendientes: document.getElementById('fqFPx')?.style.display === 'none' ? 0 : num(val('fqFP')), descuentos: num(val('fqA')), descuentos_concepto: val('fqC'), veinte_dias: chk('fq20'), descontar_prestamos: chk('fqP') }; }
 function calcFiniquito() {
   const e = emp(val('fqE')), op = opFiniquito();
   if (!e.fecha_ingreso) return toast('El empleado no tiene fecha de ingreso', 'warning');
@@ -2594,8 +2778,8 @@ function vConfig() {
         ${n('dias_aguinaldo', 'Días de aguinaldo')}${n('prima_vacacional', 'Prima vacacional %')}${n('prima_dominical', 'Prima dominical %')}
         ${n('cobertura_factor', 'Factor de pago de coberturas', '1 = salario por hora normal; 2 = doble')}${n('dia_extra_factor', 'Factor de pago de día extra', '1 = un salario diario')}
         <div class="fgrp"><label>Horas extra sin monto pactado</label><select id="rg_horas_extra_modo" ${ro}><option value="ley" ${R.horas_extra_modo !== 'sencillo' ? 'selected' : ''}>Por ley: dobles / triples</option><option value="sencillo" ${R.horas_extra_modo === 'sencillo' ? 'selected' : ''}>Sencillas (salario por hora)</option></select></div></div>
-      <div class="chkrow" style="margin-top:12px">${b('falta_quita_asistencia', 'Una falta quita bono de asistencia')}${b('incompleta_quita_puntualidad', 'Checada incompleta quita bono de puntualidad')}${b('descontar_septimo', 'Descontar parte proporcional del séptimo día por falta')}${b('pagar_prima_al_gozar', 'Pagar prima vacacional al gozar las vacaciones')}</div>
-      <div class="fgrp" style="margin-top:12px"><label>Envío a Finanzas al autorizar</label><select id="rg_egreso_modo" ${ro}><option value="por_empleado" ${R.egreso_modo !== 'global' ? 'selected' : ''}>Un egreso por empleado (comprobante por persona)</option><option value="global" ${R.egreso_modo === 'global' ? 'selected' : ''}>Un egreso global por nómina</option></select></div>
+      <div class="chkrow" style="margin-top:12px">${b('falta_quita_asistencia', 'Una falta quita bono de asistencia')}${b('incompleta_quita_puntualidad', 'Checada incompleta quita bono de puntualidad')}${b('descontar_septimo', 'Descontar parte proporcional del séptimo día por falta')}${b('pagar_prima_al_gozar', 'Pagar prima vacacional al gozar las vacaciones')}${b('retroactivo_contrato', 'Contratos: aplicar incidencias en la quincena siguiente (pago retroactivo)')}</div>
+      <div class="okbox" style="margin-top:12px">Al autorizar: contratos = un egreso de dispersión de nómina; honorarios = un egreso por persona con factura pendiente.</div>
       <div class="fgrp" style="margin-top:12px"><label>Días festivos adicionales (uno por renglón: aaaa-mm-dd nombre)</label><textarea id="rg_fx" ${ro}>${(R.festivos_extra || []).map(x => (x.fecha || x) + ' ' + (x.nombre || '')).join('\n')}</textarea></div>
       <button class="btn btn-p btn-sm solo-cap" style="margin-top:12px" onclick="guardarReglas()">Guardar reglas (doble PIN)</button></div></div>
     <div class="cfg-section"><h3>Valores fiscales ${esc(F.anio || '')}</h3><div class="body">
@@ -2618,8 +2802,7 @@ async function guardarReglas() {
   const R = { ...REG() };
   for (const k of ['tolerancia_min', 'comida_tol_min', 'salida_anticipada_min', 'dedup_min', 'retardos_quitan_puntualidad', 'retardos_por_falta', 'dias_quincena', 'horas_jornada', 'dias_aguinaldo', 'prima_vacacional', 'prima_dominical', 'cobertura_factor', 'dia_extra_factor']) R[k] = num(val('rg_' + k));
   R.horas_extra_modo = val('rg_horas_extra_modo');
-  for (const k of ['falta_quita_asistencia', 'incompleta_quita_puntualidad', 'descontar_septimo', 'pagar_prima_al_gozar']) R[k] = chk('rg_' + k);
-  R.egreso_modo = val('rg_egreso_modo');
+  for (const k of ['falta_quita_asistencia', 'incompleta_quita_puntualidad', 'descontar_septimo', 'pagar_prima_al_gozar', 'retroactivo_contrato']) R[k] = chk('rg_' + k);
   R.festivos_extra = val('rg_fx').split('\n').map(l => l.trim()).filter(Boolean).map(l => { const m = /^(\d{4}-\d{2}-\d{2})\s*(.*)$/.exec(l); return m ? { fecha: m[1], nombre: m[2] || 'Día festivo' } : null; }).filter(Boolean);
   if (R.dias_aguinaldo < 15) return toast('El aguinaldo no puede ser menor a 15 días (art. 87 LFT)', 'warning');
   if (R.prima_vacacional < 25) return toast('La prima vacacional no puede ser menor a 25% (art. 80 LFT)', 'warning');
