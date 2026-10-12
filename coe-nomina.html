@@ -646,6 +646,15 @@ tr.clk{cursor:pointer;}
 
 <div id="toastBox"></div>
 
+<div class="mov" id="dlgOv" style="display:none;z-index:9999">
+  <div class="mdl mdl-sm">
+    <div class="mhd"><span class="mtit" id="dlgT">Confirmar</span></div>
+    <div class="mbdy"><div id="dlgM" style="font-size:13px;line-height:1.5;white-space:pre-line"></div>
+      <textarea id="dlgI" style="margin-top:12px;display:none" rows="3"></textarea></div>
+    <div class="mft"><button class="btn btn-s" id="dlgNo">Cancelar</button><button class="btn btn-p" id="dlgSi">Aceptar</button></div>
+  </div>
+</div>
+
 <div class="mov" id="mGen" style="display:none;" onclick="if(event.target===this)CM('mGen')">
   <div class="mdl mdl-lg" id="mGenBox">
     <div class="mhd"><span class="mtit" id="mGenT"></span><span class="mcls" onclick="CM('mGen')">✕</span></div>
@@ -1259,6 +1268,27 @@ function hoyCorte() {
   return c && c < h ? c : h;
 }
 
+// ── Diálogos propios (no dependen de alert/confirm/prompt del navegador) ──
+function dialogo({ titulo = 'Confirmar', msg = '', entrada = false, si = 'Aceptar', no = 'Cancelar' }) {
+  return new Promise(res => {
+    const ov = document.getElementById('dlgOv'), inp = document.getElementById('dlgI');
+    document.getElementById('dlgT').textContent = titulo;
+    document.getElementById('dlgM').textContent = msg;
+    inp.style.display = entrada ? '' : 'none'; inp.value = '';
+    const bSi = document.getElementById('dlgSi'), bNo = document.getElementById('dlgNo');
+    bSi.textContent = si; bNo.textContent = no; bNo.style.display = no ? '' : 'none';
+    const fin = v => { ov.style.display = 'none'; bSi.onclick = bNo.onclick = null; inp.onkeydown = null; res(v); };
+    bSi.onclick = () => { if (entrada && !inp.value.trim()) { inp.focus(); return; } fin(entrada ? inp.value.trim() : true); };
+    bNo.onclick = () => fin(entrada ? null : false);
+    inp.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); bSi.click(); } };
+    ov.style.display = 'flex';
+    setTimeout(() => (entrada ? inp : bSi).focus(), 50);
+  });
+}
+const confirmar = (msg, titulo = 'Confirmar', si = 'Aceptar') => dialogo({ titulo, msg, si });
+const pedir = (msg, titulo = 'Motivo') => dialogo({ titulo, msg, entrada: true, si: 'Continuar' });
+const aviso = (msg, titulo = 'Aviso') => dialogo({ titulo, msg, no: '' });
+
 // ── PIN ─────────────────────────────────────────
 let _pin = { buf: '', res: null, rej: null };
 function askPin(titulo, sub = '') {
@@ -1349,14 +1379,15 @@ async function doLogin() {
   entrarApp();
 }
 async function logout() {
-  if (!confirm('¿Cerrar sesión en este equipo?')) return;
+  if (!(await confirmar('¿Cerrar sesión en este equipo?', 'Salir', 'Salir'))) return;
   try { await sb.rpc('nom_logout', { p_token: ses.token }); } catch { }
   try { localStorage.removeItem(SES_KEY); } catch { }
+  if (window.__NOM_DEMO) { ses = null; VIEW.nomId = null; document.getElementById('app').style.display = 'none'; document.getElementById('lgP').value = ''; document.getElementById('lgErr').textContent = ''; document.getElementById('loginScreen').style.display = 'flex'; return; }
   location.reload();
 }
-function sesionVencida() {
+async function sesionVencida() {
   try { localStorage.removeItem(SES_KEY); } catch { }
-  alert('Tu sesión expiró o tu acceso cambió. Entra de nuevo.');
+  await aviso('Tu sesión expiró o tu acceso cambió. Entra de nuevo.');
   location.reload();
 }
 
@@ -1382,7 +1413,7 @@ async function entrarApp() {
   document.body.classList.toggle('ro', !puedeCap());
   document.body.classList.toggle('no-dir', !esDir());
   goTab(location.hash.slice(1) || 'ini');
-  setInterval(() => { if (document.visibilityState === 'visible' && document.getElementById('mGen').style.display !== 'flex') recargar(false); }, 120000);
+  if (!window._nomTick) window._nomTick = setInterval(() => { if (ses && document.visibilityState === 'visible' && document.getElementById('mGen').style.display !== 'flex') recargar(false); }, 120000);
 }
 
 // Rango de datos: periodo visible con margen
@@ -1395,7 +1426,7 @@ async function cargar(primera, desde, hasta) {
   if (error) {
     if (lb) { lb.className = 'live off'; document.getElementById('liveTx').textContent = 'Sin conexión'; }
     if (primera) {
-      if (/nom_datos/.test(error.message)) { alert('Falta correr el SQL de Nómina 2.0 en Supabase (sql/nom2_base.sql).'); }
+      if (/nom_datos/.test(error.message)) { aviso('Falta correr el SQL de Nómina 2.0 en Supabase (sql/nom2_completo.sql).'); }
       else toast('Sin conexión: ' + error.message, 'error');
       document.getElementById('loginScreen').style.display = 'flex';
     }
@@ -1673,7 +1704,7 @@ async function agregarChecada(eid, fecha) {
   toast('Checada agregada', 'success'); await recargar(); verDia(eid, fecha);
 }
 async function anularChecada(id, eid, fecha) {
-  const m = prompt('Motivo para anular esta checada (información sensible, requiere doble PIN):');
+  const m = await pedir('Motivo para anular esta checada. Es información sensible: requiere doble PIN.', 'Anular checada');
   if (!m || !m.trim()) return;
   const r = await firmar('nom_checada_anular', { p_id: id, p_motivo: m.trim() }, { titulo: 'Anular checada', doble: true, sub2: 'Anular checada' });
   if (!r) return;
@@ -1691,7 +1722,7 @@ async function guardarIncidencia(eids, fecha, pref = 'di') {
   if (['vacaciones', 'vac_a_cuenta'].includes(d.tipo) && eids.length === 1) {
     const s = NOM.saldoVacaciones(emp(eids[0]), DB.incidencias, hoy());
     const n = NOM.dias(fecha, d.fecha_fin || fecha).filter(f => NOM.horarioDia(emp(eids[0]), f).laborable && !NOM.esFestivo(f, REG())).length;
-    if (s && n > s.disponibles && !confirm(`Solo tiene ${s.disponibles} día(s) de vacaciones disponibles y registras ${n}. ¿Continuar?`)) return;
+    if (s && n > s.disponibles && !(await confirmar(`Solo tiene ${s.disponibles} día(s) de vacaciones disponibles y registras ${n}. ¿Continuar?`, 'Saldo de vacaciones'))) return;
   }
   let pin; try { pin = await askPin('Registrar incidencia', `${TIPOS_INC[d.tipo]} · ${eids.length} empleado(s)`); } catch { return; }
   let ev = '';
@@ -1703,7 +1734,7 @@ async function guardarIncidencia(eids, fecha, pref = 'di') {
   if (pref === 'di' && eids.length === 1) verDia(eids[0], fecha); else CM('mGen');
 }
 async function anularIncidencia(id, eid, fecha) {
-  const m = prompt('Motivo para anular la incidencia (requiere doble PIN):');
+  const m = await pedir('Motivo para anular la incidencia. Requiere doble PIN.', 'Anular incidencia');
   if (!m || !m.trim()) return;
   const r = await firmar('nom_incidencia_anular', { p_id: id, p_motivo: m.trim() }, { titulo: 'Anular incidencia', doble: true, sub2: 'Anular incidencia' });
   if (!r) return;
@@ -2045,7 +2076,7 @@ async function guardarCalculo() {
 async function revisarNomina(dec) {
   const n = DB.nominas.find(x => x.id === VIEW.nomId);
   let nota = '';
-  if (dec === 'observada') { nota = prompt('¿Qué hay que corregir?'); if (!nota || !nota.trim()) return; }
+  if (dec === 'observada') { nota = await pedir('¿Qué hay que corregir?', 'Observar nómina'); if (!nota || !nota.trim()) return; }
   const r = await firmar('nom_nomina_revisar', { p_nomina: n.id, p_decision: dec, p_nota: nota }, { titulo: dec === 'revisada' ? 'Marcar revisada' : 'Observar nómina', sub: `${n.folio} · neto ${$$(n.neto)}` });
   if (!r) return;
   toast(dec === 'revisada' ? 'Revisada. Falta la autorización del Director.' : 'Nómina observada', 'success'); await recargar();
@@ -2053,14 +2084,14 @@ async function revisarNomina(dec) {
 async function autorizarNomina() {
   const n = DB.nominas.find(x => x.id === VIEW.nomId);
   const modo = REG().egreso_modo === 'global' ? 'un egreso global' : `un egreso por empleado (${n.empleados})`;
-  if (!confirm(`Autorizar ${n.folio} por ${$$(n.neto)}.\n\nSe registra en COE Finanzas como ${modo}, categoría Nómina, vence el ${fmtD(n.fecha_pago)}. Se aplican las parcialidades de préstamos. ¿Continuar?`)) return;
+  if (!(await confirmar(`Autorizar ${n.folio} por ${$$(n.neto)}.\n\nSe registra en COE Finanzas como ${modo}, categoría Nómina, vence el ${fmtD(n.fecha_pago)}. Se aplican las parcialidades de préstamos. ¿Continuar?`, 'Autorizar nómina', 'Autorizar'))) return;
   const r = await firmar('nom_nomina_autorizar', { p_nomina: n.id }, { titulo: 'Autorizar nómina', sub: `Director General · ${n.folio} · ${$$(n.neto)}` });
   if (!r) return;
   toast('Autorizada y enviada a COE Finanzas', 'success'); await recargar();
 }
 async function reabrirNomina() {
   const n = DB.nominas.find(x => x.id === VIEW.nomId);
-  const m = prompt('Motivo para reabrir (se anulan sus egresos en Finanzas si no tienen pagos). Requiere doble PIN:');
+  const m = await pedir('Motivo para reabrir. Se anulan sus egresos en Finanzas si no tienen pagos. Requiere doble PIN.', 'Reabrir nómina');
   if (!m || !m.trim()) return;
   const r = await firmar('nom_nomina_reabrir', { p_nomina: n.id, p_motivo: m.trim() }, { titulo: 'Reabrir nómina', doble: true, sub2: 'Reabrir ' + n.folio });
   if (!r) return;
@@ -2068,7 +2099,7 @@ async function reabrirNomina() {
 }
 async function cancelarNomina() {
   const n = DB.nominas.find(x => x.id === VIEW.nomId);
-  const m = prompt('Motivo de cancelación (doble PIN):');
+  const m = await pedir('Motivo de cancelación. Requiere doble PIN.', 'Cancelar nómina');
   if (!m || !m.trim()) return;
   const r = await firmar('nom_nomina_cancelar', { p_nomina: n.id, p_motivo: m.trim() }, { titulo: 'Cancelar nómina', doble: true, sub2: 'Cancelar ' + n.folio });
   if (!r) return;
@@ -2081,9 +2112,7 @@ function recibosImpresion(n, eid) {
   return rs.slice().sort((a, b) => (a.detalle.nombre || '').localeCompare(b.detalle.nombre || ''));
 }
 function ventanaImpresion(titulo, cuerpo, horizontal) {
-  const w = window.open('', '_blank');
-  if (!w) return toast('Permite ventanas emergentes para imprimir', 'warning');
-  w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(titulo)}</title>
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(titulo)}</title>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=DM+Mono&display=swap" rel="stylesheet">
   <style>@page{size:letter ${horizontal ? 'landscape' : 'portrait'};margin:10mm}*{box-sizing:border-box;margin:0;padding:0}body{font-family:Outfit,Arial,sans-serif;color:#111;font-size:10.5px}
   .rc{height:126mm;border:1px solid #999;border-radius:6px;padding:9px 12px;margin-bottom:6mm;page-break-inside:avoid;display:flex;flex-direction:column}
@@ -2093,9 +2122,12 @@ function ventanaImpresion(titulo, cuerpo, horizontal) {
   .r{text-align:right;white-space:nowrap}.tt td{font-weight:800;border-top:1.5px solid #111}.net{display:flex;justify-content:space-between;align-items:center;background:#f1f1f1;border-radius:4px;padding:6px 10px;margin-top:6px;font-weight:800;font-size:13px}
   .fir{display:flex;gap:30px;margin-top:14px}.fir div{flex:1;border-top:1px solid #111;text-align:center;padding-top:3px;font-size:9.5px}.mini{font-size:9px;color:#555}
   .bar{position:fixed;top:8px;right:8px}.bar button{font:inherit;padding:6px 14px;margin-left:6px}@media print{.bar{display:none}}</style></head>
-  <body><div class="bar"><button onclick="print()">Imprimir</button><button onclick="close()">Cerrar</button></div>${cuerpo}</body></html>`);
-  w.document.close();
-  setTimeout(() => { try { w.focus(); } catch { } }, 300);
+  <body><div class="bar"><button onclick="print()">Imprimir</button><button onclick="close()">Cerrar</button></div>${cuerpo}</body></html>`;
+  const w = window.__NOM_DEMO ? null : window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); setTimeout(() => { try { w.focus(); } catch { } }, 300); return; }
+  // Sin ventanas emergentes: vista dentro de la app
+  modal(titulo, `<iframe title="${esc(titulo)}" style="width:100%;height:70vh;border:1px solid var(--br);border-radius:var(--rs);background:#fff" srcdoc="${esc(html)}"></iframe>
+    <div class="mini" style="margin-top:8px">Para imprimir, abre la app en el navegador del equipo; aquí se muestra la vista previa.</div>`, '', 'xl');
 }
 function imprimirRecibos(nid, eid) {
   const n = DB.nominas.find(x => x.id === nid), rs = recibosImpresion(n, eid);
@@ -2235,7 +2267,7 @@ async function confirmarBaja(id) {
   const r = await firmar('nom_empleado_guardar', { p_datos: { id, nombre: emp(id).nombre, activo: false, fecha_baja: f, motivo_baja: m + (val('bjN') ? ': ' + val('bjN') : '') } }, { titulo: 'Baja de empleado', doble: true, sub2: 'Baja de ' + corto(emp(id).nombre) });
   if (!r) return;
   CM('mGen'); toast('Baja registrada', 'success'); await recargar();
-  if (confirm('¿Calcular ahora el finiquito?')) { VIEW.finEmp = id; VIEW.finMot = m; VIEW.finFecha = f; goTab('pre'); }
+  if (await confirmar('¿Calcular ahora el finiquito?', 'Finiquito', 'Calcular')) { VIEW.finEmp = id; VIEW.finMot = m; VIEW.finFecha = f; goTab('pre'); }
 }
 async function reactivarEmpleado(id) {
   const r = await firmar('nom_empleado_guardar', { p_datos: { id, nombre: emp(id).nombre, activo: true, fecha_baja: '', motivo_baja: '' } }, { titulo: 'Reactivar empleado', doble: true, sub2: 'Reactivar' });
@@ -2357,7 +2389,7 @@ async function guardarComisiones() {
   CM('mGen'); toast(`${ok} comisión(es) registradas`, ok === L.length ? 'success' : 'warning'); await recargar();
 }
 async function anularMovimiento(id) {
-  const m = prompt('Motivo para anular (doble PIN):'); if (!m || !m.trim()) return;
+  const m = await pedir('Motivo para anular. Requiere doble PIN.', 'Anular movimiento'); if (!m || !m.trim()) return;
   const r = await firmar('nom_movimiento_anular', { p_id: id, p_motivo: m.trim() }, { titulo: 'Anular movimiento', doble: true, sub2: 'Anular bono/descuento' });
   if (r) { toast('Anulado', 'success'); await recargar(); }
 }
@@ -2390,12 +2422,12 @@ async function guardarPrestamo() {
   if (r) { CM('mGen'); toast('Registrado', 'success'); await recargar(); }
 }
 async function pausarPrestamo(id, pausar) {
-  const m = prompt(pausar ? '¿Por qué se pausa el descuento? (no se descontará hasta reanudar)' : 'Motivo para reanudar:'); if (!m || !m.trim()) return;
+  const m = await pedir(pausar ? '¿Por qué se pausa el descuento? No se descontará hasta reanudar.' : 'Motivo para reanudar:', pausar ? 'Pausar parcialidades' : 'Reanudar parcialidades'); if (!m || !m.trim()) return;
   const r = await firmar('nom_descuento_pausar', { p_id: id, p_pausar: pausar, p_motivo: m.trim() }, { titulo: pausar ? 'Pausar parcialidades' : 'Reanudar parcialidades' });
   if (r) { toast(pausar ? 'Pausado' : 'Reanudado', 'success'); await recargar(); }
 }
 async function anularPrestamo(id) {
-  const m = prompt('Motivo para cancelar las parcialidades pendientes (doble PIN):'); if (!m || !m.trim()) return;
+  const m = await pedir('Motivo para cancelar las parcialidades pendientes. Requiere doble PIN.', 'Cancelar préstamo'); if (!m || !m.trim()) return;
   const r = await firmar('nom_descuento_anular', { p_id: id, p_motivo: m.trim() }, { titulo: 'Cancelar parcialidades', doble: true, sub2: 'Cancelar préstamo' });
   if (r) { toast('Cancelado', 'success'); await recargar(); }
 }
