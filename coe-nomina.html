@@ -631,6 +631,7 @@ tr.clk{cursor:pointer;}
     <div class="ni solo-cap" id="n-imp" onclick="goTab('imp')">⇪ Subir checador (PDF)</div>
     <div class="ns">Pago</div>
     <div class="ni" id="n-nom" onclick="goTab('nom')">$ Nóminas<span class="nbdg" id="nb-nom" style="display:none"></span></div>
+    <div class="ni" id="n-pag" onclick="goTab('pag')">✓ Pagos y facturas<span class="nbdg" id="nb-pag" style="display:none"></span></div>
     <div class="ni" id="n-rec" onclick="goTab('rec')">▤ Recibos</div>
     <div class="ni" id="n-mov" onclick="goTab('mov')">± Bonos y descuentos</div>
     <div class="ni" id="n-pre" onclick="goTab('pre')">✦ Prestaciones</div>
@@ -1519,7 +1520,7 @@ function goTab(t) {
   render();
 }
 function render() {
-  const fn = { ini: vTablero, asi: vAsistencia, imp: vImportar, nom: vNominas, rec: vRecibos, mov: vMovimientos, pre: vPrestaciones, emp: vEmpleados, rep: vReportes, bit: vBitacora, cfg: vConfig }[tab];
+  const fn = { ini: vTablero, asi: vAsistencia, imp: vImportar, nom: vNominas, rec: vRecibos, pag: vPagos, mov: vMovimientos, pre: vPrestaciones, emp: vEmpleados, rep: vReportes, bit: vBitacora, cfg: vConfig }[tab];
   try { fn(); } catch (e) { console.error(e); document.getElementById('mainContent').innerHTML = `<div class="errbox">Error al mostrar: ${esc(e.message)}</div>`; }
 }
 function setMain(h) { document.getElementById('mainContent').innerHTML = h; }
@@ -1528,6 +1529,7 @@ function badges() {
   const p = pendientes();
   badge('nb-asi', p.incompletas + p.sinVincular);
   badge('nb-nom', p.porRevisar.length + p.porAutorizar.length);
+  try { const R = resumenPagos(); badge('nb-pag', R.vencidos.length + R.facVenc.length || ''); } catch { }
   badge('nb-ini', 0);
 }
 function perSelector(cb = 'cambiaPer') {
@@ -1578,11 +1580,8 @@ function egresoTxt(r) {
   if (!r.egreso_id) return '<span class="mini">—</span>';
   const eg = DB.egresos.find(x => x.id === r.egreso_id);
   if (!eg) return '<span class="mini">—</span>';
-  if (eg.anulado) return '<span class="bdg bdg-can">Anulado</span>';
-  const fac = eg.factura_pendiente && !eg.con_xml ? ' <span class="bdg bdg-pnd" title="Honorarios: factura por solicitar en Finanzas">sin factura</span>' : '';
-  if (eg.estado === 'pagado') return `<span class="bdg bdg-pag">Pagado ${eg.fecha_pago ? fmtD(eg.fecha_pago) : ''}</span>${fac}`;
-  if (num(eg.pagado) > 0) return `<span class="bdg bdg-pro">Parcial ${$$(eg.pagado)}</span>${fac}`;
-  return `<span class="bdg bdg-pnd">Por pagar</span>${fac}`;
+  const s = estadoEgreso(eg);
+  return `<span class="bdg ${s.c}">${esc(s.t)}</span>`;
 }
 
 // ══ TABLERO ═════════════════════════════════════
@@ -1597,7 +1596,12 @@ function vTablero() {
   if (p.sinVincular) al.push({ c: 'r', t: `Checadas sin vincular a un empleado (${Object.entries(p.sinVincularIds).map(([b, n]) => `ID ${b} ${n}`).join(', ')})`, m: 'Vincúlalas para que cuenten en la asistencia.', go: "goTab('imp')" });
   if (p.porAutorizar.length && esDir()) al.push({ c: 'r', t: `${p.porAutorizar.length} nómina(s) revisada(s) esperando tu autorización`, m: p.porAutorizar.map(n => n.folio + ' · ' + perTxt(n.fecha_ini, n.fecha_fin)).join(' · '), go: `abrirNomina('${p.porAutorizar[0].id}')` });
   if (p.porRevisar.length && puedeCap()) al.push({ c: '', t: `${p.porRevisar.length} nómina(s) calculada(s) por revisar`, m: p.porRevisar.map(n => n.folio + (n.estado === 'observada' ? ' (observada)' : '')).join(' · '), go: `abrirNomina('${p.porRevisar[0].id}')` });
-  if (p.porPagar.length) al.push({ c: 'i', t: `${p.porPagar.length} nómina(s) autorizada(s) con pagos pendientes en Finanzas`, m: p.porPagar.map(n => n.folio).join(' · '), go: `abrirNomina('${p.porPagar[0].id}')` });
+  const RP = resumenPagos();
+  if (RP.vencidos.length) al.push({ c: 'r', t: `${RP.vencidos.length} pago(s) de nómina vencidos sin comprobante`, m: RP.vencidos.map(x => egNombre(x.e).split(' · ')[0] + ' · ' + $$(x.e.monto)).join(' · '), go: "VIEW.pagF='pendientes';goTab('pag')" });
+  if (RP.porVencer.length) al.push({ c: '', t: `${RP.porVencer.length} pago(s) de nómina vencen en 2 días o menos`, m: 'Paga y sube el comprobante a tiempo.', go: "VIEW.pagF='pendientes';goTab('pag')" });
+  else if (RP.porPagar.length && !RP.vencidos.length) al.push({ c: 'i', t: `${RP.porPagar.length} pago(s) de nómina por pagar`, m: RP.porPagar.map(x => fmtD(x.e.vence)).filter((v, i, s) => s.indexOf(v) === i).map(v => 'límite ' + v).join(' · '), go: "VIEW.pagF='pendientes';goTab('pag')" });
+  if (RP.facVenc.length) al.push({ c: 'r', t: `${RP.facVenc.length} factura(s) de honorarios vencidas`, m: RP.facVenc.map(x => corto(egNombre(x.e))).join(' · '), go: "VIEW.pagF='facturas';goTab('pag')" });
+  if (RP.facPend.length) { const d = Math.min(...RP.facPend.map(x => diasHasta(x.e.factura_limite) ?? 99)); al.push({ c: d <= 5 ? '' : 'i', t: `${RP.facPend.length} factura(s) de honorarios por solicitar · ${d <= 0 ? 'vencen hoy' : 'faltan ' + d + ' días para fin de mes'}`, m: RP.facPend.map(x => corto(egNombre(x.e))).join(' · '), go: "VIEW.pagF='facturas';goTab('pag')" }); }
   if (p.incompletas) al.push({ c: '', t: `${p.incompletas} día(s) con checadas incompletas esta quincena`, m: 'Agrega la checada faltante o justifica (falla de checador).', go: "VIEW.soloPend=true;goTab('asi')" });
   if (p.sinAut) al.push({ c: '', t: `${p.sinAut} día(s) trabajados en descanso o festivo sin autorizar pago`, m: 'Si corresponde pago, registra la incidencia de descanso/festivo laborado.', go: "VIEW.soloPend=true;goTab('asi')" });
   if (!nomP && P.fin <= NOM.addDays(hoy(), 3) && puedeCap()) al.push({ c: 'i', t: 'La nómina de esta quincena aún no se crea', m: perTxt(P.ini, P.fin), go: 'nuevaNomina()' });
@@ -2079,7 +2083,8 @@ async function vNominaDetalle() {
     ${st(1, 'Calculada', n.calculada_at ? esc(corto(nomUsr(n.calculada_por))) + ' · ' + fmtDT(n.calculada_at) : 'pendiente', !!n.calculada_at && n.estado !== 'borrador', ['borrador'].includes(n.estado))}
     ${st(2, 'Revisada (Contadora)', n.revisada_at ? esc(corto(nomUsr(n.revisada_por))) + ' · ' + fmtDT(n.revisada_at) : 'pendiente', ['revisada', 'autorizada'].includes(n.estado), ['calculada'].includes(n.estado), n.estado === 'observada')}
     ${st(3, 'Autorizada (Director)', n.autorizada_at ? esc(corto(nomUsr(n.autorizada_por))) + ' · ' + fmtDT(n.autorizada_at) : 'pendiente', n.estado === 'autorizada', n.estado === 'revisada')}
-    ${st(4, 'Pagada (Finanzas)', n.estado === 'autorizada' ? `${pg.pag} de ${pg.total} pagos` : '—', n.estado === 'autorizada' && pg.total && pg.pag === pg.total, n.estado === 'autorizada' && pg.pag < pg.total)}
+    ${st(4, 'Pagada con comprobante', n.estado === 'autorizada' ? `${pg.pag} de ${pg.total} pagos · límite ${fmtD(n.fecha_pago)}` : 'límite ' + fmtD(n.fecha_pago), n.estado === 'autorizada' && pg.total && pg.pag === pg.total, n.estado === 'autorizada' && pg.pag < pg.total && n.fecha_pago >= hoy(), n.estado === 'autorizada' && pg.pag < pg.total && n.fecha_pago < hoy())}
+    ${(() => { const hs = DB.egresos.filter(e => e.origen_id === n.id && !e.anulado && egEsHon(e)); if (!hs.length) return ''; const ok = hs.filter(e => e.con_xml || e.con_pdf).length; const venc = hs.some(e => estadoEgreso(e).k === 'factura_vencida'); return st(5, 'Facturas de honorarios', `${ok} de ${hs.length} recibidas`, ok === hs.length, !venc && ok < hs.length && n.estado === 'autorizada', venc); })()}
   </div>
   ${n.revision_nota ? `<div class="${n.estado === 'observada' ? 'errbox' : 'okbox'}"><b>Observación:</b> ${esc(n.revision_nota)}</div>` : ''}
   ${n.cancelada_motivo ? `<div class="errbox">Cancelada: ${esc(n.cancelada_motivo)}</div>` : ''}
@@ -2090,7 +2095,7 @@ async function vNominaDetalle() {
     <div class="dc"><div class="dlbl">Percepciones</div><div class="dval" style="font-size:20px">${$$(tot.p)}</div><div class="dmta">deducciones ${$$(tot.d)}</div></div>
     <div class="dc"><div class="dlbl">Neto a pagar</div><div class="dval" style="font-size:20px;color:var(--pr)">${$$(tot.n)}</div><div class="dmta">${filas.length} empleados</div></div>
     <div class="dc"><div class="dlbl">Contrato · dispersión bancaria</div><div class="dval" style="font-size:20px">${$$(grp.c.n)}</div><div class="dmta">${grp.c.k} empleado(s) · un solo pago con plantilla del banco</div></div>
-    <div class="dc"><div class="dlbl">Honorarios · transferencia + factura</div><div class="dval" style="font-size:20px">${$$(grp.h.n)}</div><div class="dmta">${grp.h.k} persona(s) · pasan a Facturas por solicitar</div></div>
+    <div class="dc"><div class="dlbl">Honorarios · transferencia + factura</div><div class="dval" style="font-size:20px">${$$(grp.h.n)}</div><div class="dmta">${grp.h.k} persona(s) · al comprobar su pago se pide su factura</div></div>
   </div>
   ${n.tipo === 'ordinaria' ? `<div class="mini" style="margin:-8px 0 14px">Contratos: sueldo de esta quincena con incidencias del ${perTxt(NOM.quincena(NOM.addDays(n.fecha_ini, -1)).ini, NOM.quincena(NOM.addDays(n.fecha_ini, -1)).fin)}. Honorarios: días laborados de esta quincena.</div>` : ''}
   <div class="tc"><table><thead><tr><th>Empleado</th><th>Modalidad</th><th class="tr">Días</th><th class="tr">F</th><th class="tr">R</th><th class="tr">Percepciones</th><th class="tr">Deducciones</th><th class="tr">Neto</th><th>${n.estado === 'autorizada' ? 'Pago' : 'Avisos'}</th><th></th></tr></thead><tbody>
@@ -2103,7 +2108,8 @@ async function vNominaDetalle() {
       <td><button class="btn btn-s btn-sm" onclick="event.stopPropagation();imprimirRecibos('${n.id}','${r.empleado_id}')">🖨 Recibo</button></td></tr>`; }).join('') || '<tr><td colspan="10"><div class="emp">Sin empleados para esta nómina.</div></td></tr>'}
   </tbody></table></div>
   <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;margin-top:16px">${acciones.join('')}</div>
-  ${n.estado === 'autorizada' ? `<div class="mini" style="margin-top:10px;text-align:right">En <a class="lk" href="${document.getElementById('lnkFin').href}" target="_blank">COE Finanzas → Por pagar</a>: contratos = un egreso de dispersión (comprobante: la transferencia de nómina del banco); honorarios = un egreso por persona que queda en Facturas por solicitar.</div>` : ''}`);
+  ${n.estado === 'autorizada' ? `<div class="tc" style="margin-top:20px"><div class="ttb"><b>Pagos de esta nómina</b><span class="mini">pago a más tardar el ${fmtD(n.fecha_pago)} · comprobante dentro de ${REG().comprobante_dias ?? 1} día(s) · factura de honorarios antes de fin de mes</span></div>${tablaPagos(DB.egresos.filter(e => e.origen_id === n.id && !e.anulado), false)}</div>` : ''}
+  ${n.estado === 'autorizada' ? `<div class="mini" style="margin-top:10px;text-align:right">También en <a class="lk" href="${document.getElementById('lnkFin').href}" target="_blank">COE Finanzas → Por pagar</a>: contratos = un egreso de dispersión (comprobante: la transferencia de nómina del banco); honorarios = un egreso por persona; al comprobar el pago pasa a Facturas por solicitar.</div>` : ''}`);
 }
 function reciboDe(eid) {
   const n = DB.nominas.find(x => x.id === VIEW.nomId);
@@ -2151,7 +2157,7 @@ async function autorizarNomina() {
   const n = DB.nominas.find(x => x.id === VIEW.nomId);
   const rs = DB.recibos.filter(r => r.nomina_id === n.id), h = rs.filter(r => (r.detalle.modalidad || NOM.modalidad(emp(r.empleado_id) || {})) === 'honorarios');
   const tc = rs.filter(r => !h.includes(r)).reduce((a, r) => a + num(r.neto), 0), th = h.reduce((a, r) => a + num(r.neto), 0);
-  if (!(await confirmar(`Autorizar ${n.folio} por ${$$(n.neto)}.\n\nSe registra en COE Finanzas con vencimiento ${fmtD(n.fecha_pago)}:\n• Contratos: un egreso de dispersión de nómina por ${$$(tc)} (${rs.length - h.length} empleados), pagado con la plantilla del banco.\n• Honorarios: ${h.length} egreso(s) por ${$$(th)}, cada uno a nombre de la persona y en Facturas por solicitar.\n\nSe aplican las parcialidades de préstamos. ¿Continuar?`, 'Autorizar nómina', 'Autorizar'))) return;
+  if (!(await confirmar(`Autorizar ${n.folio} por ${$$(n.neto)}.\n\nSe registra en COE Finanzas con vencimiento ${fmtD(n.fecha_pago)}:\n• Contratos: un egreso de dispersión de nómina por ${$$(tc)} (${rs.length - h.length} empleados), pagado con la plantilla del banco.\n• Honorarios: ${h.length} egreso(s) por ${$$(th)}, cada uno a nombre de la persona; al subir su comprobante de pago se pide la factura (límite fin de mes).\n\nSe aplican las parcialidades de préstamos. ¿Continuar?`, 'Autorizar nómina', 'Autorizar'))) return;
   const r = await firmar('nom_nomina_autorizar', { p_nomina: n.id }, { titulo: 'Autorizar nómina', sub: `Director General · ${n.folio} · ${$$(n.neto)}` });
   if (!r) return;
   toast('Autorizada y enviada a COE Finanzas', 'success'); await recargar();
@@ -2284,6 +2290,106 @@ function vRecibos() {
     : '<div class="emp"><div class="ic">▤</div>Aún no hay recibos. Crea la nómina de la quincena en Nóminas y guarda el cálculo: los recibos se generan solos.</div>'}</div>`);
 }
 
+// ══ PAGOS Y FACTURAS ════════════════════════════
+// Cada nómina autorizada genera egresos en COE Finanzas: uno de dispersión (contratos) y uno por persona (honorarios).
+// Aquí se controla la fecha límite de pago, la captura del comprobante y, en honorarios, la factura.
+function egNomina(eg) { return DB.nominas.find(n => n.id === eg.origen_id); }
+function egRecibos(eg) { return DB.recibos.filter(r => r.egreso_id === eg.id); }
+function egEsHon(eg) { const rs = egRecibos(eg); return rs.length === 1 && (rs[0].detalle.modalidad || NOM.modalidad(emp(rs[0].empleado_id) || {})) === 'honorarios'; }
+function egNombre(eg) { const rs = egRecibos(eg); return egEsHon(eg) ? (emp(rs[0].empleado_id)?.nombre || rs[0].detalle.nombre) : `Dispersión de nómina · ${rs.length} empleado(s)`; }
+function limiteComprobante(eg) { return eg.vence ? NOM.addDays(eg.vence, +(REG().comprobante_dias ?? 1)) : null; }
+const diasHasta = f => f ? NOM.diffDias(hoy(), f) : null;
+function estadoEgreso(eg) {
+  if (eg.anulado) return { k: 'anulado', c: 'bdg-can', t: 'Anulado', s: 'g' };
+  const hon = egEsHon(eg), pagado = eg.estado === 'pagado' || num(eg.pagado) >= num(eg.monto) - 0.01;
+  if (!pagado) {
+    const lc = limiteComprobante(eg), dv = diasHasta(eg.vence), dc = diasHasta(lc);
+    if (dc !== null && dc < 0) return { k: 'comp_vencido', c: 'bdg-ven', t: `Comprobante vencido (${fmtD(lc)})`, s: 'r' };
+    if (dv !== null && dv < 0) return { k: 'pago_vencido', c: 'bdg-ven', t: `Pago vencido · comprobante hasta ${fmtD(lc)}`, s: 'r' };
+    if (dv !== null && dv <= 2) return { k: 'por_vencer', c: 'bdg-pnd', t: dv === 0 ? 'Se paga hoy' : `Vence en ${dv} día(s)`, s: 'a' };
+    return { k: 'por_pagar', c: 'bdg-pnd', t: `Por pagar · ${fmtD(eg.vence)}`, s: 'a' };
+  }
+  if (!hon) return { k: 'pagado', c: 'bdg-pag', t: `Pagado ${fmtD(eg.fecha_pago)}`, s: 'v' };
+  if (eg.con_xml || eg.con_pdf) return { k: 'factura_ok', c: 'bdg-pag', t: 'Pagado · factura recibida', s: 'v' };
+  if (eg.factura_pendiente) {
+    const d = diasHasta(eg.factura_limite);
+    if (d !== null && d < 0) return { k: 'factura_vencida', c: 'bdg-ven', t: `Factura vencida (${fmtD(eg.factura_limite)})`, s: 'r' };
+    return { k: 'factura_pend', c: 'bdg-pnd', t: `Factura por solicitar · hasta ${fmtD(eg.factura_limite)}`, s: d !== null && d <= 5 ? 'a' : 'a' };
+  }
+  return { k: 'sin_factura', c: 'bdg-arc', t: 'Pagado · sin factura (baja)', s: 'g' };
+}
+function resumenPagos() {
+  const L = DB.egresos.filter(e => !e.anulado && egNomina(e));
+  const est = L.map(e => ({ e, s: estadoEgreso(e) }));
+  return {
+    L: est,
+    vencidos: est.filter(x => ['comp_vencido', 'pago_vencido'].includes(x.s.k)),
+    porVencer: est.filter(x => x.s.k === 'por_vencer'),
+    porPagar: est.filter(x => ['por_pagar', 'por_vencer', 'pago_vencido', 'comp_vencido'].includes(x.s.k)),
+    facPend: est.filter(x => x.s.k === 'factura_pend'),
+    facVenc: est.filter(x => x.s.k === 'factura_vencida')
+  };
+}
+function filaPago(eg, conNomina) {
+  const s = estadoEgreso(eg), n = egNomina(eg), hon = egEsHon(eg), pagado = ['pagado', 'factura_ok', 'factura_pend', 'factura_vencida', 'sin_factura'].includes(s.k);
+  return `<tr><td><span class="sem ${s.s}"></span></td>
+    <td><b>${esc(hon ? corto(egNombre(eg)) : egNombre(eg))}</b><div class="mini">${hon ? 'Honorarios · transferencia a su cuenta' : 'Contratos · plantilla del banco'}</div></td>
+    ${conNomina ? `<td><span class="lk" onclick="abrirNomina('${n.id}')">${esc(n.folio)}</span><div class="mini">${perTxt(n.fecha_ini, n.fecha_fin)}</div></td>` : ''}
+    <td class="tr amt">${$$(eg.monto)}</td>
+    <td class="mini">Pago: <b>${fmtD(eg.vence)}</b><br>Comprobante: <b>${fmtD(limiteComprobante(eg))}</b>${hon ? `<br>Factura: <b>${eg.factura_limite ? fmtD(eg.factura_limite) : 'fin del mes del pago'}</b>` : ''}</td>
+    <td><span class="bdg ${s.c}">${esc(s.t)}</span>${pagado && eg.referencia ? `<div class="mini">Ref. ${esc(eg.referencia)}</div>` : ''}</td>
+    <td><div class="rowact">${!pagado && puedeCap() ? `<button class="btn btn-p btn-sm" onclick="registrarPago('${eg.id}')">⬆ Comprobante de pago</button>` : ''}
+      ${eg.comprobante ? `<a class="dtag ok" href="${esc(eg.comprobante)}" target="_blank">PAGO</a>` : ''}${eg.xml_url ? `<a class="dtag ok" href="${esc(eg.xml_url)}" target="_blank">XML</a>` : ''}${eg.pdf_url ? `<a class="dtag ok" href="${esc(eg.pdf_url)}" target="_blank">PDF</a>` : ''}
+      ${!pagado && !hon ? `<button class="btn btn-s btn-sm" onclick="plantillaBanco('${n.id}')">⬇ Plantilla</button>` : ''}
+      ${window.__NOM_DEMO && ['factura_pend', 'factura_vencida'].includes(s.k) ? `<button class="btn btn-s btn-sm" title="En la app real la Contadora la sube en COE Finanzas" onclick="demoFacturaRecibida('${eg.id}');recargar()">Simular factura recibida</button>` : ''}</div></td></tr>`;
+}
+function tablaPagos(lista, conNomina) {
+  if (!lista.length) return '<div class="emp">Sin pagos en esta vista.</div>';
+  return `<table><thead><tr><th></th><th>Pago</th>${conNomina ? '<th>Nómina</th>' : ''}<th class="tr">Monto</th><th>Fechas límite</th><th>Estado</th><th></th></tr></thead><tbody>${lista.map(eg => filaPago(eg, conNomina)).join('')}</tbody></table>`;
+}
+function vPagos() {
+  const R = resumenPagos(), f = VIEW.pagF || 'pendientes';
+  const filtros = { pendientes: ['Por pagar', R.porPagar], facturas: ['Facturas de honorarios', [...R.facVenc, ...R.facPend]], todos: ['Todos', R.L] };
+  const lista = filtros[f][1].map(x => x.e).sort((a, b) => String(a.vence || '').localeCompare(String(b.vence || '')));
+  setMain(`
+  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Pagos y facturas</div><div class="psub">Cada nómina autorizada se paga a más tardar en su fecha de pago y el comprobante se captura dentro de ${REG().comprobante_dias ?? 1} día(s). En honorarios, al comprobar el pago se pide la factura en COE Finanzas, con límite al fin de ese mes.</div></div></div>
+  <div class="dg">
+    <div class="dc tap" onclick="VIEW.pagF='pendientes';render()"><div class="dlbl">Por pagar</div><div class="dval" style="font-size:22px">${R.porPagar.length}</div><div class="dmta">${$$(R.porPagar.reduce((a, x) => a + num(x.e.monto) - num(x.e.pagado), 0))}</div></div>
+    <div class="dc tap" onclick="VIEW.pagF='pendientes';render()"><div class="dlbl">Vencidos sin comprobante</div><div class="dval" style="font-size:22px;color:${R.vencidos.length ? 'var(--dg)' : 'var(--sc)'}">${R.vencidos.length}</div><div class="dmta">${R.porVencer.length} por vencer en 2 días</div></div>
+    <div class="dc tap" onclick="VIEW.pagF='facturas';render()"><div class="dlbl">Facturas de honorarios</div><div class="dval" style="font-size:22px;color:${R.facPend.length ? 'var(--wn)' : 'var(--sc)'}">${R.facPend.length}</div><div class="dmta">por solicitar este mes</div></div>
+    <div class="dc tap" onclick="VIEW.pagF='facturas';render()"><div class="dlbl">Facturas vencidas</div><div class="dval" style="font-size:22px;color:${R.facVenc.length ? 'var(--dg)' : 'var(--sc)'}">${R.facVenc.length}</div><div class="dmta">pagadas sin factura al cierre de mes</div></div>
+  </div>
+  <div class="chips" style="margin-bottom:12px">${Object.entries(filtros).map(([k, [t, l]]) => `<span class="chip ${f === k ? 'act' : ''}" onclick="VIEW.pagF='${k}';render()">${t} (${l.length})</span>`).join('')}</div>
+  <div class="tc">${tablaPagos(lista, true)}</div>
+  <div class="mini" style="margin-top:10px">La Contadora pide y sube las facturas en <a class="lk" href="${document.getElementById('lnkFin').href}" target="_blank">COE Finanzas → Facturas por solicitar</a>; aquí se ve el estado.</div>`);
+}
+function registrarPago(egId) {
+  const eg = DB.egresos.find(e => e.id === egId), hon = egEsHon(eg), n = egNomina(eg);
+  const p = estadoEgreso(eg);
+  const e0 = hon ? emp(egRecibos(eg)[0]?.empleado_id) : null;
+  modal('Comprobante de pago', `
+    <div class="kv" style="margin-bottom:12px"><b>Pago</b><div>${esc(egNombre(eg))}</div><b>Nómina</b><div>${esc(n.folio)} · ${perTxt(n.fecha_ini, n.fecha_fin)}</div>
+      <b>Monto</b><div class="mono">${$$(num(eg.monto) - num(eg.pagado))}</div><b>Fecha límite</b><div>${fmtD(eg.vence)} <span class="bdg ${p.c}">${esc(p.t)}</span></div>
+      ${hon ? `<b>Cuenta</b><div class="mono">${esc(e0?.banco || '')} ${esc(e0?.clabe || 'sin CLABE')}</div>` : ''}</div>
+    <div class="fgrd"><div class="fgrp"><label>Fecha en que se pagó</label><input type="date" id="rpF" value="${hoy()}" max="${hoy()}"></div>
+      <div class="fgrp"><label>Referencia / clave de rastreo</label><input type="text" id="rpR"></div>
+      <div class="fgrp sp2"><label>Comprobante (imagen o PDF de la transferencia)</label><input type="file" id="rpA" accept="image/*,application/pdf"></div></div>
+    <div class="${hon ? (e0?.activo ? 'okbox' : 'warnbox') : 'okbox'}" style="margin-top:12px">${hon
+      ? (e0?.activo ? `Al guardar, el pago queda comprobado y COE Finanzas pide la factura a ${esc(corto(e0.nombre))} por ${$$(eg.monto)}, con límite al último día del mes del pago.` : 'La persona está dada de baja: el pago se comprueba pero no se solicita factura.')
+      : 'Comprobante de la transferencia de nómina hecha con la plantilla del banco. Cubre a todos los empleados por contrato de esta nómina.'}</div>`,
+    `<button class="btn btn-s" onclick="CM('mGen')">Cancelar</button><button class="btn btn-p" onclick="guardarPago('${egId}')">Guardar con PIN</button>`, 'sm');
+}
+async function guardarPago(egId) {
+  const f = document.getElementById('rpA').files[0];
+  if (!f) return toast('Adjunta el comprobante', 'warning');
+  if (!val('rpF')) return toast('Indica la fecha de pago', 'warning');
+  let pin; try { pin = await askPin('Registrar pago', 'Comprobante de pago de nómina'); } catch { return; }
+  let up; try { up = await subirArchivo(f, 'pagos'); } catch (e) { return toast(e.message, 'error'); }
+  const r = await firmar('nom_registrar_pago', { p_egreso: egId, p_fecha: val('rpF'), p_referencia: val('rpR'), p_comprobante_url: up.url, p_sha256: up.sha }, { pin });
+  if (!r) return;
+  CM('mGen'); toast(r.factura ? `Pago comprobado. Factura solicitada en Finanzas (límite ${fmtD(r.limite)})` : 'Pago comprobado', 'success'); await recargar();
+}
+
 // ══ EMPLEADOS (ficha del administrador) ═════════
 const SENSIBLES = ['salario_diario', 'salario_fiscal', 'bono_puntualidad', 'bono_asistencia', 'bono_no_fiscal', 'esquema', 'modalidad', 'banco', 'clabe', 'rfc', 'nss', 'curp', 'fecha_ingreso', 'retener_isr', 'retener_imss', 'dias_aguinaldo', 'prima_vacacional', 'vac_extra'];
 const MOD_BDG = m => `<span class="bdg ${m === 'honorarios' ? 'bdg-a1' : 'bdg-aut'}">${esc(NOM.MODALIDADES[m] || m)}</span>`;
@@ -2376,7 +2482,7 @@ function fichaModalidad() {
   document.getElementById('eeQl').textContent = hon ? 'Ejemplo: 13 días laborados' : 'Equivale por quincena';
   document.getElementById('eeQ').textContent = $$(sd * (hon ? 13 : REG().dias_quincena));
   document.getElementById('eeModTxt').textContent = hon
-    ? 'Se paga por día laborado en la misma quincena (según el checador). El pago va a Finanzas por transferencia a su nombre y queda en "Facturas por solicitar" hasta que entregue su factura.'
+    ? 'Se paga por día laborado en la misma quincena (según el checador), por transferencia a su cuenta. Al subir el comprobante de pago, COE Finanzas le pide su factura con límite al fin de ese mes (mientras esté activo).'
     : 'Se paga la quincena completa. Las faltas, retardos e incidencias se aplican en la quincena siguiente (pago retroactivo). Se paga con la plantilla del banco en un solo egreso de dispersión.';
   document.getElementById('eePagoTxt').textContent = hon ? 'La CLABE y el RFC se usan para darlo de alta como proveedor en COE Finanzas.' : 'La CLABE se usa en la plantilla de dispersión del banco.';
 }

@@ -1128,8 +1128,8 @@ begin
           fecha_vencimiento, estado, notas, created_by, updated_by, razon_social_id, sede, origen, origen_id, documento_tipo,
           factura_pendiente, factura_limite, clabe_proveedor, metodo_pago, firma1_por, firma1_at, aprobado_por, aprobado_at)
         values ('egreso', 'normal', v_ep, 'Honorarios ' || v_per, 'Honorarios', r.neto, 0, n.fecha_pago, 'pendiente',
-          'Pago por transferencia' || coalesce(' · ' || r.banco, '') || '. Debe entregar factura por ' || to_char(r.neto, 'FM$999,999,990.00'),
-          (f.u).id, (f.u).id, v_rs, n.sede, 'nomina', p_nomina::text, 'sin_factura', true, v_lim, r.clabe, 'PUE',
+          'Pago por transferencia' || coalesce(' · ' || r.banco, '') || '. Al registrar el comprobante de pago se solicita su factura por ' || to_char(r.neto, 'FM$999,999,990.00') || ' (límite: fin del mes del pago).',
+          (f.u).id, (f.u).id, v_rs, n.sede, 'nomina', p_nomina::text, 'sin_factura', false, null, r.clabe, 'PUE',
           (f.u).id, now(), (f.u).nombre, now())
         returning id into v_fid;
         update public.nom_recibos set egreso_id = v_fid where id = r.id;
@@ -1212,7 +1212,12 @@ begin
                  join public.nom_nominas n on n.id = r.nomina_id where n.fecha_fin >= p_desde - 400),
     'egresos', (select coalesce(jsonb_agg(jsonb_build_object('id', f.id, 'estado', f.estado, 'monto', f.monto_total,
                  'pagado', f.monto_pagado, 'anulado', coalesce(f.anulado, false), 'fecha_pago', f.fecha_pago,
-                 'factura_pendiente', coalesce(f.factura_pendiente, false), 'factura_limite', f.factura_limite, 'con_xml', f.xml_url is not null)), '[]')
+                 'factura_pendiente', coalesce(f.factura_pendiente, false), 'factura_limite', f.factura_limite, 'con_xml', f.xml_url is not null,
+                 'con_pdf', f.pdf_url is not null, 'xml_url', f.xml_url, 'pdf_url', f.pdf_url, 'vence', f.fecha_vencimiento,
+                 'comprobante', f.comprobante_pago_url, 'entidad_id', f.entidad_id, 'origen_id', f.origen_id,
+                 'categoria', f.categoria, 'descripcion', f.descripcion,
+                 'referencia', (select a.referencia from public.fin_abonos a where a.factura_id = f.id and not coalesce(a.anulado,false) order by a.created_at desc limit 1),
+                 'pagado_por', (select a.created_by from public.fin_abonos a where a.factura_id = f.id and not coalesce(a.anulado,false) order by a.created_at desc limit 1))), '[]')
                 from public.fin_facturas f where f.origen = 'nomina'),
     'descuentos', (select coalesce(jsonb_agg(to_jsonb(d) order by d.created_at desc), '[]') from public.nom_descuentos d),
     'descuento_pagos', (select coalesce(jsonb_agg(to_jsonb(p)), '[]') from public.nom_descuento_pagos p),
@@ -1222,4 +1227,42 @@ begin
     'historial_v1', (select coalesce(jsonb_agg(jsonb_build_object('e', p.empleado_id, 'ini', p.fecha_inicio, 'fin', p.fecha_fin,
                   'neto', p.salario_neto, 'tipo', p.tipo)), '[]') from public.nom_periodos p where p.fecha_fin >= p_desde - 400)
   );
+end $$;
+
+-- ═══ Pagos de nómina: comprobante con fecha límite; honorarios → factura (Finanzas) ═══
+update public.nom_config set valor = jsonb_build_object('comprobante_dias', 1) || valor where clave = 'reglas';
+
+-- Registra el pago de un egreso de nómina con su comprobante (misma lógica que fin_pagar de COE Finanzas).
+-- Honorarios: si la persona sigue activa, el egreso pasa a "Facturas por solicitar" con límite al fin del mes del pago.
+create or replace function public.nom_registrar_pago(p_token text, p_pin text, p_egreso uuid, p_fecha date,
+  p_referencia text, p_comprobante_url text, p_sha256 text)
+returns jsonb language plpgsql security definer set search_path to 'public' as $$
+declare f record; fa public.fin_facturas; v_id uuid; v_saldo numeric; v_emp public.nom_empleados; v_lim date; v_fecha date := coalesce(p_fecha, current_date);
+begin
+  f := public.nom__firmar(p_token, p_pin, 2);
+  if f.err is not null then return jsonb_build_object('ok', false, 'error', f.err); end if;
+  select * into fa from public.fin_facturas where id = p_egreso for update;
+  if fa.id is null or coalesce(fa.anulado, false) or fa.origen <> 'nomina' then return jsonb_build_object('ok', false, 'error', 'cuenta'); end if;
+  if coalesce(p_comprobante_url, '') = '' then return jsonb_build_object('ok', false, 'error', 'comprobante'); end if;
+  if v_fecha > current_date then return jsonb_build_object('ok', false, 'error', 'fecha_futura'); end if;
+  v_saldo := fa.monto_total - coalesce(fa.monto_pagado, 0);
+  if v_saldo <= 0.01 then return jsonb_build_object('ok', false, 'error', 'ya_pagado'); end if;
+  insert into public.fin_abonos (factura_id, monto, fecha_pago, metodo, referencia, comprobante_url, created_by, firma1_por, firma1_at, notas)
+  values (p_egreso, v_saldo, v_fecha, 'transferencia', nullif(trim(p_referencia),''), p_comprobante_url, (f.u).id, (f.u).id, now(), 'Registrado desde COE Nómina')
+  returning id into v_id;
+  insert into public.fin_documentos (tabla, registro_id, tipo, url, sha256, subido_por)
+  values ('fin_abonos', v_id, 'comprobante_pago', p_comprobante_url, coalesce(p_sha256, ''), (f.u).id);
+  select * into v_emp from public.nom_empleados where entidad_id = fa.entidad_id limit 1;
+  v_lim := (date_trunc('month', v_fecha) + interval '1 month - 1 day')::date;
+  update public.fin_facturas set
+    monto_pagado = monto_total, estado = 'pagado', fecha_pago = v_fecha, comprobante_pago_url = p_comprobante_url, propuesta_pago = null,
+    factura_pendiente = case when v_emp.id is not null and xml_url is null then coalesce(v_emp.activo, false) else factura_pendiente end,
+    factura_limite = case when v_emp.id is not null and xml_url is null and coalesce(v_emp.activo, false) then v_lim else factura_limite end,
+    notas = case when v_emp.id is not null and not coalesce(v_emp.activo, false) then coalesce(notas, '') || E'\nPrestador dado de baja: no se solicita factura.' else notas end,
+    updated_by = (f.u).id, updated_at = now()
+  where id = p_egreso;
+  perform public.nom__log('fin_facturas', p_egreso, 'update', 'Pago de nómina con comprobante: ' || fa.descripcion,
+    jsonb_build_object('monto', v_saldo, 'fecha', v_fecha, 'referencia', p_referencia,
+                       'factura_solicitada', v_emp.id is not null and coalesce(v_emp.activo, false), 'factura_limite', v_lim));
+  return jsonb_build_object('ok', true, 'id', v_id, 'factura', v_emp.id is not null and coalesce(v_emp.activo, false), 'limite', v_lim);
 end $$;
