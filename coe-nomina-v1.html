@@ -1,0 +1,1834 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>COE Nómina</title>
+<!--
+╔══════════════════════════════════════════════════════════╗
+║  COE NÓMINA — SQL PARA SUPABASE (ejecutar en SQL Editor) ║
+╚══════════════════════════════════════════════════════════╝
+
+CREATE TABLE nom_empleados (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  nombre TEXT NOT NULL,
+  puesto TEXT,
+  esquema TEXT CHECK (esquema IN ('fijo','honorarios','comisiones')) DEFAULT 'fijo',
+  salario_base NUMERIC(10,2) DEFAULT 0,
+  periodicidad TEXT CHECK (periodicidad IN ('semanal','quincenal','mensual')) DEFAULT 'quincenal',
+  fecha_ingreso DATE,
+  rfc TEXT, nss TEXT, banco TEXT, clabe TEXT,
+  activo BOOLEAN DEFAULT TRUE,
+  pin_acceso TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE nom_periodos (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  empleado_id UUID REFERENCES nom_empleados(id),
+  fecha_inicio DATE NOT NULL,
+  fecha_fin DATE NOT NULL,
+  fecha_pago DATE,
+  dias_trabajados NUMERIC(5,1) DEFAULT 0,
+  retardos INTEGER DEFAULT 0,
+  faltas NUMERIC(5,1) DEFAULT 0,
+  horas_extra NUMERIC(5,1) DEFAULT 0,
+  bonos NUMERIC(10,2) DEFAULT 0,
+  penalizaciones NUMERIC(10,2) DEFAULT 0,
+  salario_bruto NUMERIC(10,2) DEFAULT 0,
+  descuentos_parcialidades NUMERIC(10,2) DEFAULT 0,
+  deducciones_manuales NUMERIC(10,2) DEFAULT 0,
+  salario_neto NUMERIC(10,2) DEFAULT 0,
+  observaciones TEXT,
+  tipo TEXT DEFAULT 'regular',
+  cerrado BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE nom_asistencias (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  empleado_id UUID REFERENCES nom_empleados(id),
+  fecha DATE NOT NULL,
+  hora_entrada TIME, hora_salida TIME,
+  hora_comida_salida TIME, hora_comida_regreso TIME,
+  retardo BOOLEAN DEFAULT FALSE,
+  comida_excedida BOOLEAN DEFAULT FALSE,
+  falta BOOLEAN DEFAULT FALSE,
+  observacion TEXT,
+  fuente TEXT DEFAULT 'manual',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(empleado_id, fecha)
+);
+
+CREATE TABLE nom_descuentos (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  empleado_id UUID REFERENCES nom_empleados(id),
+  tipo TEXT CHECK (tipo IN ('prestamo','sancion','venta')) DEFAULT 'prestamo',
+  descripcion TEXT,
+  monto_total NUMERIC(10,2) NOT NULL,
+  monto_cuota NUMERIC(10,2) NOT NULL,
+  cuotas_total INTEGER DEFAULT 1 CHECK (cuotas_total <= 12),
+  cuotas_pagadas INTEGER DEFAULT 0,
+  activo BOOLEAN DEFAULT TRUE,
+  created_by TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE nom_descuento_pagos (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  descuento_id UUID REFERENCES nom_descuentos(id),
+  periodo_id UUID REFERENCES nom_periodos(id),
+  empleado_id UUID REFERENCES nom_empleados(id),
+  monto NUMERIC(10,2),
+  fecha_pago DATE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE nom_pdf_mapeo (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  nombre_pdf TEXT UNIQUE NOT NULL,
+  empleado_id UUID REFERENCES nom_empleados(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE nom_historial (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  tabla TEXT, accion TEXT,
+  registro_id TEXT,
+  datos_antes JSONB,
+  datos_despues JSONB,
+  usuario TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE nom_rrhh_usuarios (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  nombre TEXT NOT NULL,
+  pin TEXT NOT NULL,
+  activo BOOLEAN DEFAULT TRUE,
+  perm_importar_pdf BOOLEAN DEFAULT TRUE,
+  perm_descuentos BOOLEAN DEFAULT FALSE,
+  perm_reportes BOOLEAN DEFAULT TRUE,
+  perm_cerrar_periodo BOOLEAN DEFAULT FALSE,
+  perm_editar_asistencias BOOLEAN DEFAULT TRUE,
+  perm_editar_nomina BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Egreso fin_facturas (al cerrar nómina):
+-- INSERT INTO fin_facturas (proveedor, concepto, monto, tipo, fecha)
+-- VALUES ('Nómina', 'Nómina [ini]–[fin]', totalNeto, 'egreso', fechaPago);
+-->
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+:root{
+  --navy:#1a2f5a;--navy-d:#0f1e3d;--navy-l:#2a4a8a;
+  --accent:#2563eb;--acc-l:#dbeafe;
+  --green:#16a34a;--green-l:#dcfce7;
+  --red:#dc2626;--red-l:#fee2e2;
+  --yellow:#d97706;--yellow-l:#fef3c7;
+  --purple:#7c3aed;--purple-l:#ede9fe;
+  --gray:#6b7280;--gray-l:#f3f4f6;
+  --border:#e5e7eb;--white:#fff;--text:#111827;
+  --shadow:0 2px 8px rgba(0,0,0,.12);--shadow-l:0 8px 32px rgba(0,0,0,.18);
+  --r:10px;--font:'Segoe UI',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);background:#eef1f7;color:var(--text);font-size:15px;min-height:100vh}
+
+/* LOGIN */
+#loginScreen{display:flex;align-items:center;justify-content:center;min-height:100vh;
+  background:linear-gradient(135deg,var(--navy-d) 0%,var(--navy) 60%,var(--navy-l) 100%)}
+.loginBox{background:var(--white);border-radius:20px;padding:44px 36px;width:340px;text-align:center;box-shadow:var(--shadow-l)}
+.loginLogo{font-size:40px;font-weight:900;color:var(--navy);letter-spacing:-2px;margin-bottom:2px}
+.loginSub{color:var(--gray);font-size:12px;margin-bottom:28px;text-transform:uppercase;letter-spacing:1px}
+.pinRow{display:flex;gap:10px;justify-content:center;margin-bottom:24px}
+.pinDot{width:16px;height:16px;border-radius:50%;border:2px solid var(--border);transition:.2s}
+.pinDot.on{background:var(--navy);border-color:var(--navy)}
+.pinGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.pBtn{background:var(--gray-l);border:none;border-radius:10px;padding:16px;font-size:19px;font-weight:600;cursor:pointer;transition:.15s;color:var(--text)}
+.pBtn:hover{background:var(--acc-l);color:var(--accent)}
+.pBtn:active{transform:scale(.95)}
+.pBtn.del{background:var(--red-l);color:var(--red)}
+#loginErr{color:var(--red);font-size:13px;min-height:18px;margin-top:6px}
+
+/* SHELL */
+#appShell{display:none}
+#hdr{background:var(--navy);color:#fff;padding:0 22px;display:flex;align-items:center;justify-content:space-between;height:58px;position:sticky;top:0;z-index:100;box-shadow:var(--shadow)}
+.hLogo{font-size:20px;font-weight:900;letter-spacing:-1px}
+.hLogo span{color:#60a5fa}
+.hUser{display:flex;align-items:center;gap:10px;font-size:13px}
+.hUser strong{color:#93c5fd}
+.btnOut{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px}
+.btnOut:hover{background:rgba(255,255,255,.2)}
+
+/* NAV */
+#nav{background:var(--white);border-bottom:2px solid var(--border);display:flex;padding:0 20px;overflow-x:auto;scrollbar-width:none}
+#nav::-webkit-scrollbar{display:none}
+.nTab{padding:13px 16px;cursor:pointer;font-weight:600;font-size:13px;color:var(--gray);border-bottom:3px solid transparent;margin-bottom:-2px;white-space:nowrap;transition:.2s}
+.nTab:hover{color:var(--accent)}
+.nTab.on{color:var(--navy);border-bottom-color:var(--navy)}
+
+/* CONTENT */
+#content{padding:20px;max-width:1400px;margin:0 auto}
+.tabPane{display:none}
+.tabPane.on{display:block}
+
+/* CARDS */
+.card{background:var(--white);border-radius:var(--r);box-shadow:var(--shadow);padding:20px;margin-bottom:16px}
+.cardTit{font-size:16px;font-weight:700;color:var(--navy);margin-bottom:16px;display:flex;align-items:center;gap:7px}
+
+/* BUTTONS */
+.btn{display:inline-flex;align-items:center;gap:5px;padding:8px 16px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:.2s}
+.btn-n{background:var(--navy);color:#fff}.btn-n:hover{background:var(--navy-d)}
+.btn-s{background:var(--green);color:#fff}.btn-s:hover{background:#15803d}
+.btn-d{background:var(--red);color:#fff}.btn-d:hover{background:#b91c1c}
+.btn-w{background:var(--yellow);color:#fff}.btn-w:hover{background:#b45309}
+.btn-g{background:var(--gray-l);color:var(--text);border:1px solid var(--border)}.btn-g:hover{background:var(--border)}
+.btn-b{background:var(--accent);color:#fff}.btn-b:hover{background:#1d4ed8}
+.btn-p{background:var(--purple);color:#fff}.btn-p:hover{background:#6d28d9}
+.sm{padding:4px 10px;font-size:12px}
+
+/* TABLE */
+.tWrap{overflow-x:auto;border-radius:8px;border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse}
+th{background:var(--navy);color:#fff;padding:10px 13px;text-align:left;font-size:12px;font-weight:600;white-space:nowrap}
+td{padding:9px 13px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:nth-child(even) td{background:#f9fafb}
+tr:hover td{background:var(--acc-l)}
+
+/* BADGES */
+.badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600}
+.b-g{background:var(--green-l);color:var(--green)}
+.b-r{background:var(--red-l);color:var(--red)}
+.b-y{background:var(--yellow-l);color:var(--yellow)}
+.b-b{background:var(--acc-l);color:var(--accent)}
+.b-x{background:var(--gray-l);color:var(--gray)}
+.b-p{background:var(--purple-l);color:var(--purple)}
+
+/* FORMS */
+.fGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.fGrp{display:flex;flex-direction:column;gap:4px}
+.fGrp label{font-size:12px;font-weight:600;color:var(--gray)}
+.fGrp input,.fGrp select,.fGrp textarea{padding:8px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:13px;font-family:var(--font);transition:.2s;background:#fff}
+.fGrp input:focus,.fGrp select:focus,.fGrp textarea:focus{outline:none;border-color:var(--accent)}
+.fAct{display:flex;gap:8px;justify-content:flex-end;margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}
+
+/* MODAL */
+.mOv{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;align-items:flex-start;justify-content:center;padding:30px 16px;overflow-y:auto}
+.mOv.on{display:flex}
+.modal{background:#fff;border-radius:16px;width:100%;max-width:680px;box-shadow:var(--shadow-l);margin:auto}
+.mHdr{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.mHdr h3{font-size:17px;font-weight:700;color:var(--navy)}
+.mX{background:none;border:none;font-size:22px;cursor:pointer;color:var(--gray);line-height:1}
+.mX:hover{color:var(--red)}
+.mBody{padding:22px}
+
+/* STATS */
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;margin-bottom:16px}
+.stat{background:#fff;border-radius:var(--r);padding:16px 18px;box-shadow:var(--shadow);border-left:4px solid var(--accent)}
+.stat.g{border-left-color:var(--green)}.stat.r{border-left-color:var(--red)}.stat.y{border-left-color:var(--yellow)}.stat.p{border-left-color:var(--purple)}
+.sLbl{font-size:11px;color:var(--gray);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
+.sVal{font-size:24px;font-weight:800;color:var(--navy)}
+.sSub{font-size:11px;color:var(--gray);margin-top:1px}
+
+/* TOP BAR */
+.topBar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+.topL{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.topR{display:flex;gap:6px;flex-wrap:wrap}
+.pgTitle{font-size:19px;font-weight:800;color:var(--navy)}
+
+/* PERIODO BAR */
+.periBar{display:flex;align-items:center;gap:10px;background:#fff;border-radius:var(--r);padding:12px 16px;box-shadow:var(--shadow);margin-bottom:16px;flex-wrap:wrap}
+.periBar label{font-weight:700;font-size:13px;color:var(--navy)}
+.periBar input{padding:6px 9px;border:1.5px solid var(--border);border-radius:6px;font-size:13px}
+
+/* CALENDAR */
+.calWrap{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.calHead{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:4px}
+.calHD{text-align:center;font-size:11px;font-weight:700;color:var(--gray);padding:3px}
+.cDay{border:1px solid var(--border);border-radius:5px;padding:5px;min-height:60px;cursor:pointer;transition:.15s;font-size:11px}
+.cDay:hover{border-color:var(--accent);background:var(--acc-l)}
+.cDay.today{border-color:var(--navy);background:#eff6ff}
+.cDay.hasD{background:var(--green-l);border-color:var(--green)}
+.cDay.falta{background:var(--red-l);border-color:var(--red)}
+.cDay.retrd{background:var(--yellow-l);border-color:var(--yellow)}
+.cDay.other{opacity:.3}
+.cDN{font-weight:700;color:var(--navy);margin-bottom:2px}
+.cDI{font-size:10px;color:var(--gray)}
+
+/* RECIBO PRINT */
+.reciboSheet{background:#fff;border:1px solid var(--border);border-radius:var(--r);padding:28px;max-width:580px;margin:0 auto 20px}
+.rHdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px}
+.rLogo{font-size:34px;font-weight:900;color:var(--navy);letter-spacing:-2px}
+.rHr{border:none;border-top:2px solid var(--navy);margin:12px 0}
+.rGrid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:16px}
+.rField{font-size:12px}.rField span{color:var(--gray)}
+.rTable{width:100%;border-collapse:collapse;margin-bottom:14px;font-size:12px}
+.rTable th{background:var(--navy);color:#fff;padding:7px 11px}
+.rTable td{padding:6px 11px;border-bottom:1px solid var(--border)}
+.rNeto{background:var(--navy);color:#fff;border-radius:8px;padding:14px 18px;text-align:center;margin-bottom:20px}
+.rNetoLbl{font-size:11px;opacity:.8;text-transform:uppercase;letter-spacing:1px}
+.rNetoMonto{font-size:30px;font-weight:900}
+.rFirma{border-top:1px solid var(--border);padding-top:36px;text-align:center;font-size:11px;color:var(--gray)}
+.rFoot{font-size:10px;color:var(--gray);text-align:center;margin-top:12px}
+.rDescRow{display:flex;justify-content:space-between;padding:3px 0;font-size:12px}
+
+/* DESCUENTOS */
+.dcCard{border:1px solid var(--border);border-radius:var(--r);padding:16px;margin-bottom:10px}
+.dcHeader{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.dcBars{background:var(--gray-l);border-radius:20px;height:8px;overflow:hidden;margin-bottom:4px}
+.dcBar{height:100%;border-radius:20px;background:var(--green);transition:.4s}
+.dcBar.warn{background:var(--yellow)}
+.dcBar.done{background:var(--gray)}
+
+/* HISTORIAL */
+.histRow{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px}
+.histBadge{min-width:70px;text-align:center}
+.histInfo{flex:1}
+.histTime{font-size:11px;color:var(--gray);white-space:nowrap}
+
+/* PDF IMPORT */
+.mapRow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px}
+.mapPDF{font-weight:700;min-width:160px;color:var(--navy)}
+.mapArrow{color:var(--gray)}
+.mapSel{flex:1;padding:6px 10px;border:1.5px solid var(--border);border-radius:6px;font-size:13px}
+.mapSel.matched{border-color:var(--green);background:var(--green-l)}
+.mapSel.unmatched{border-color:var(--red);background:var(--red-l)}
+
+/* MISC */
+.money{font-weight:700;font-family:'Courier New',monospace}
+.muted{color:var(--gray);font-size:12px}
+.loading{display:flex;align-items:center;gap:8px;color:var(--gray);font-size:13px;padding:20px}
+.spin{width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.alert{padding:10px 14px;border-radius:7px;font-size:13px;margin-bottom:12px}
+.al-s{background:var(--green-l);color:var(--green);border:1px solid #bbf7d0}
+.al-e{background:var(--red-l);color:var(--red);border:1px solid #fecaca}
+.al-i{background:var(--acc-l);color:var(--accent);border:1px solid #bfdbfe}
+.sep{border:none;border-top:1px solid var(--border);margin:14px 0}
+.flex{display:flex}.gap8{gap:8px}.gap6{gap:6px}
+.hidden{display:none!important}
+
+/* PRINT */
+@media print{
+  body{background:#fff!important}
+  #loginScreen,#appShell>*:not(#content){display:none!important}
+  #nav,#hdr,.topBar,.periBar,.btn,.fAct,.noPrint{display:none!important}
+  .reciboSheet{box-shadow:none!important;border:1px solid #ccc!important;page-break-after:always;max-width:100%}
+  #tab-recibos{display:block!important}
+}
+@media(max-width:600px){
+  .fGrid{grid-template-columns:1fr}
+  .stats{grid-template-columns:1fr 1fr}
+  #content{padding:12px}
+  .periBar{gap:6px}
+}
+</style>
+</head>
+<body>
+
+<!-- ══════ LOGIN ══════ -->
+<div id="loginScreen">
+  <div class="loginBox">
+    <div class="loginLogo">COE</div>
+    <div class="loginSub">Sistema de Nómina</div>
+    <div class="pinRow" id="pinDots">
+      <div class="pinDot" id="pd1"></div><div class="pinDot" id="pd2"></div>
+      <div class="pinDot" id="pd3"></div><div class="pinDot" id="pd4"></div>
+    </div>
+    <div class="pinGrid">
+      <button class="pBtn" onclick="PP('1')">1</button>
+      <button class="pBtn" onclick="PP('2')">2</button>
+      <button class="pBtn" onclick="PP('3')">3</button>
+      <button class="pBtn" onclick="PP('4')">4</button>
+      <button class="pBtn" onclick="PP('5')">5</button>
+      <button class="pBtn" onclick="PP('6')">6</button>
+      <button class="pBtn" onclick="PP('7')">7</button>
+      <button class="pBtn" onclick="PP('8')">8</button>
+      <button class="pBtn" onclick="PP('9')">9</button>
+      <button class="pBtn btn-g" onclick="PC()">C</button>
+      <button class="pBtn" onclick="PP('0')">0</button>
+      <button class="pBtn del" onclick="PD()">⌫</button>
+    </div>
+    <div id="loginErr"></div>
+  </div>
+</div>
+
+<!-- ══════ APP SHELL ══════ -->
+<div id="appShell">
+  <header id="hdr">
+    <div class="hLogo">COE <span>Nómina</span></div>
+    <div class="hUser">
+      <span>Bienvenido, <strong id="hName">—</strong></span>
+      <span id="hRol" class="badge b-b" style="font-size:10px">—</span>
+      <button class="btnOut" onclick="logout()">Salir</button>
+    </div>
+  </header>
+  <nav id="nav">
+    <div class="nTab on" data-tab="empleados" onclick="ST('empleados')">👥 Empleados</div>
+    <div class="nTab" data-tab="asistencias" onclick="ST('asistencias')">📅 Asistencias</div>
+    <div class="nTab" data-tab="nomina" onclick="ST('nomina')">💵 Nómina</div>
+    <div class="nTab" data-tab="descuentos" onclick="ST('descuentos')">🔖 Descuentos</div>
+    <div class="nTab" data-tab="recibos" onclick="ST('recibos')">🧾 Recibos</div>
+    <div class="nTab" data-tab="reportes" onclick="ST('reportes')">📊 Reportes</div>
+    <div class="nTab admin-only hidden" data-tab="historial" onclick="ST('historial')">🕐 Historial</div>
+    <div class="nTab admin-only hidden" data-tab="config" onclick="ST('config')">⚙️ Config</div>
+  </nav>
+  <div id="content">
+
+    <!-- TAB EMPLEADOS -->
+    <div class="tabPane on" id="tab-empleados">
+      <div class="topBar">
+        <span class="pgTitle">Empleados</span>
+        <div class="topR">
+          <button class="btn btn-n" onclick="openEmp()">+ Nuevo Empleado</button>
+        </div>
+      </div>
+      <div id="empContent"><div class="loading"><div class="spin"></div>Cargando…</div></div>
+    </div>
+
+    <!-- TAB ASISTENCIAS -->
+    <div class="tabPane" id="tab-asistencias">
+      <div class="topBar">
+        <span class="pgTitle">Asistencias</span>
+        <div class="topR">
+          <button class="btn btn-p perm-importar" onclick="openPDFImport()">📄 Importar ZKTeco PDF</button>
+        </div>
+      </div>
+      <div class="topBar" style="margin-bottom:12px">
+        <div class="topL">
+          <select id="asEmpSel" style="padding:7px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:13px" onchange="loadCal()">
+            <option value="">— Empleado —</option>
+          </select>
+          <button class="btn btn-g sm" onclick="prevM()">◀</button>
+          <span id="mesLbl" style="font-weight:700;font-size:14px;min-width:130px;text-align:center"></span>
+          <button class="btn btn-g sm" onclick="nextM()">▶</button>
+        </div>
+      </div>
+      <div id="asContent"><div class="card" style="text-align:center;color:var(--gray);padding:40px">Selecciona un empleado para ver sus asistencias.</div></div>
+    </div>
+
+    <!-- TAB NÓMINA -->
+    <div class="tabPane" id="tab-nomina">
+      <div class="topBar">
+        <span class="pgTitle">Nómina del Periodo</span>
+        <div class="topR">
+          <button class="btn btn-w" onclick="openPagoExtra()">⭐ Pago Extraordinario</button>
+          <button class="btn btn-s perm-cerrar" onclick="cerrarPeriodo()">🔒 Cerrar Periodo</button>
+        </div>
+      </div>
+      <div class="periBar">
+        <label>Periodo:</label>
+        <input type="date" id="pIni" onchange="loadNom()">
+        <span style="color:var(--gray)">al</span>
+        <input type="date" id="pFin" onchange="loadNom()">
+        <button class="btn btn-g sm" onclick="setPeriodo('q')">Quincena actual</button>
+        <button class="btn btn-g sm" onclick="setPeriodo('m')">Mes actual</button>
+        <span id="fechaPagoLbl" style="font-size:12px;color:var(--gray);margin-left:4px"></span>
+      </div>
+      <div id="nomContent"><div class="loading"><div class="spin"></div>Cargando…</div></div>
+    </div>
+
+    <!-- TAB DESCUENTOS -->
+    <div class="tabPane" id="tab-descuentos">
+      <div class="topBar">
+        <span class="pgTitle">Descuentos en Parcialidades</span>
+        <div class="topR">
+          <button class="btn btn-n perm-descuentos" onclick="openDescuento()">+ Nuevo Descuento</button>
+        </div>
+      </div>
+      <div class="topBar" style="margin-top:-6px;margin-bottom:12px">
+        <div class="topL">
+          <select id="dcEmpFil" style="padding:7px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:13px" onchange="loadDescuentos()">
+            <option value="">Todos los empleados</option>
+          </select>
+          <select id="dcTipoFil" style="padding:7px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:13px" onchange="loadDescuentos()">
+            <option value="">Todos los tipos</option>
+            <option value="prestamo">Préstamo</option>
+            <option value="sancion">Sanción</option>
+            <option value="venta">Venta en parcialidades</option>
+          </select>
+          <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="dcSoloActivos" checked onchange="loadDescuentos()"> Solo activos
+          </label>
+        </div>
+      </div>
+      <div id="dcContent"><div class="loading"><div class="spin"></div>Cargando…</div></div>
+    </div>
+
+    <!-- TAB RECIBOS -->
+    <div class="tabPane" id="tab-recibos">
+      <div class="topBar noPrint">
+        <span class="pgTitle">Recibos de Nómina</span>
+        <div class="topR">
+          <button class="btn btn-b" onclick="window.print()">🖨 Imprimir</button>
+        </div>
+      </div>
+      <div class="topL noPrint" style="gap:8px;margin-bottom:14px;flex-wrap:wrap">
+        <select id="rcEmpSel" style="padding:7px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:13px" onchange="loadRecibos()">
+          <option value="">— Empleado —</option>
+          <option value="todos">Todos los empleados</option>
+        </select>
+        <select id="rcPerSel" style="padding:7px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:13px" onchange="loadReciboVista()">
+          <option value="">— Periodo —</option>
+        </select>
+      </div>
+      <div id="rcContent"><div class="card" style="text-align:center;color:var(--gray);padding:40px">Selecciona empleado y periodo.</div></div>
+    </div>
+
+    <!-- TAB REPORTES -->
+    <div class="tabPane" id="tab-reportes">
+      <div class="topBar">
+        <span class="pgTitle">Reportes</span>
+        <div class="topR">
+          <button class="btn btn-s" onclick="exportCSV()">📥 CSV</button>
+        </div>
+      </div>
+      <div id="rpContent"><div class="loading"><div class="spin"></div>Cargando…</div></div>
+    </div>
+
+    <!-- TAB HISTORIAL (ADMIN) -->
+    <div class="tabPane" id="tab-historial">
+      <div class="topBar">
+        <span class="pgTitle">Historial de Modificaciones</span>
+        <div class="topR">
+          <select id="histTabFil" style="padding:7px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:13px" onchange="loadHistorial()">
+            <option value="">Todas las tablas</option>
+            <option value="nom_empleados">Empleados</option>
+            <option value="nom_asistencias">Asistencias</option>
+            <option value="nom_periodos">Nómina</option>
+            <option value="nom_descuentos">Descuentos</option>
+          </select>
+        </div>
+      </div>
+      <div id="histContent"><div class="loading"><div class="spin"></div>Cargando…</div></div>
+    </div>
+
+    <!-- TAB CONFIG (ADMIN) -->
+    <div class="tabPane" id="tab-config">
+      <div class="topBar">
+        <span class="pgTitle">Configuración</span>
+        <div class="topR">
+          <button class="btn btn-n" onclick="openRRHH()">+ Usuario RRHH</button>
+        </div>
+      </div>
+      <div id="cfContent"><div class="loading"><div class="spin"></div>Cargando…</div></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════════════ MODALS ══════════════════ -->
+
+<!-- MODAL EMPLEADO -->
+<div class="mOv" id="mEmp">
+  <div class="modal">
+    <div class="mHdr"><h3 id="mEmpTit">Nuevo Empleado</h3><button class="mX" onclick="CM('mEmp')">×</button></div>
+    <div class="mBody">
+      <input type="hidden" id="eId">
+      <div class="fGrid">
+        <div class="fGrp"><label>Nombre completo *</label><input type="text" id="eNom" placeholder="Ej. María García López"></div>
+        <div class="fGrp"><label>Puesto</label><input type="text" id="ePuesto" placeholder="Ej. Recepcionista"></div>
+        <div class="fGrp"><label>Esquema salarial</label>
+          <select id="eEsq"><option value="fijo">Salario Fijo</option><option value="honorarios">Honorarios</option><option value="comisiones">Comisiones</option></select></div>
+        <div class="fGrp"><label>Salario base mensual ($)</label><input type="number" id="eSal" step="0.01" placeholder="0.00"></div>
+        <div class="fGrp"><label>Periodicidad</label>
+          <select id="ePer"><option value="quincenal">Quincenal</option><option value="semanal">Semanal</option><option value="mensual">Mensual</option></select></div>
+        <div class="fGrp"><label>Fecha ingreso</label><input type="date" id="eFIng"></div>
+        <div class="fGrp"><label>RFC</label><input type="text" id="eRFC" style="text-transform:uppercase" placeholder="VECJ880326XXX"></div>
+        <div class="fGrp"><label>NSS (IMSS)</label><input type="text" id="eNSS" placeholder="12345678901"></div>
+        <div class="fGrp"><label>Banco</label><input type="text" id="eBco" placeholder="BBVA, Banamex…"></div>
+        <div class="fGrp" style="grid-column:1/-1"><label>CLABE interbancaria (18 dígitos)</label><input type="text" id="eCLABE" maxlength="18"></div>
+        <div class="fGrp"><label>PIN acceso (4 dígitos)</label><input type="password" id="ePin" maxlength="4" placeholder="****"></div>
+      </div>
+      <div class="fAct">
+        <button class="btn btn-g" onclick="CM('mEmp')">Cancelar</button>
+        <button class="btn btn-s" onclick="saveEmp()">💾 Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL ASISTENCIA DÍA -->
+<div class="mOv" id="mAsist">
+  <div class="modal" style="max-width:420px">
+    <div class="mHdr"><h3 id="mAsistTit">Asistencia</h3><button class="mX" onclick="CM('mAsist')">×</button></div>
+    <div class="mBody">
+      <input type="hidden" id="aId"><input type="hidden" id="aFecha"><input type="hidden" id="aEmpId">
+      <div id="aLabel" style="font-weight:700;color:var(--navy);font-size:15px;margin-bottom:14px"></div>
+      <div class="fGrid" style="grid-template-columns:1fr 1fr">
+        <div class="fGrp"><label>Hora entrada</label><input type="time" id="aEnt"></div>
+        <div class="fGrp"><label>Hora salida</label><input type="time" id="aSal"></div>
+        <div class="fGrp"><label>Salida a comer</label><input type="time" id="aCS"></div>
+        <div class="fGrp"><label>Regreso de comer</label><input type="time" id="aCR"></div>
+      </div>
+      <div style="margin:12px 0;display:flex;gap:14px">
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px"><input type="checkbox" id="aFalta"> Falta</label>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px"><input type="checkbox" id="aRetardo"> Retardo manual</label>
+      </div>
+      <div class="fGrp"><label>Observación</label><input type="text" id="aObs" placeholder="Opcional"></div>
+      <div class="fAct">
+        <button class="btn btn-g" onclick="CM('mAsist')">Cancelar</button>
+        <button class="btn btn-s" onclick="saveAsist()">💾 Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL PDF IMPORT -->
+<div class="mOv" id="mPDF">
+  <div class="modal" style="max-width:760px">
+    <div class="mHdr"><h3>Importar Reporte ZKTeco</h3><button class="mX" onclick="CM('mPDF')">×</button></div>
+    <div class="mBody">
+      <div id="pdfStep1">
+        <div class="al-i alert">Sube el PDF exportado desde ZKTeco: "Reporte de Entradas y Salidas Vertical"</div>
+        <div style="border:2px dashed var(--border);border-radius:var(--r);padding:40px;text-align:center;cursor:pointer" onclick="document.getElementById('pdfFile').click()" id="pdfDrop">
+          <div style="font-size:32px">📄</div>
+          <div style="font-weight:700;color:var(--navy);margin-top:8px">Haz clic para seleccionar PDF</div>
+          <div style="color:var(--gray);font-size:12px;margin-top:4px">o arrastra el archivo aquí</div>
+        </div>
+        <input type="file" id="pdfFile" accept=".pdf" class="hidden" onchange="handlePDF(this)">
+        <div id="pdfLoading" class="hidden" style="text-align:center;padding:24px;color:var(--gray)">
+          <div class="spin" style="margin:0 auto 8px"></div>Analizando PDF…
+        </div>
+      </div>
+      <div id="pdfStep2" class="hidden">
+        <div class="alert al-i" id="pdfInfo"></div>
+        <div style="font-weight:700;color:var(--navy);margin-bottom:10px">Asignar nombres PDF → Empleados BD</div>
+        <div id="pdfMapList"></div>
+        <div class="fAct">
+          <button class="btn btn-g" onclick="CM('mPDF')">Cancelar</button>
+          <button class="btn btn-s" onclick="confirmarImport()">✅ Confirmar e Importar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL NOM DETALLE -->
+<div class="mOv" id="mNom">
+  <div class="modal">
+    <div class="mHdr"><h3 id="mNomTit">Detalle Nómina</h3><button class="mX" onclick="CM('mNom')">×</button></div>
+    <div class="mBody">
+      <input type="hidden" id="nPId"><input type="hidden" id="nEId">
+      <input type="hidden" id="nEsq" data-sal="0" data-bruto="0" data-neto="0">
+      <div id="nInfo" style="background:var(--gray-l);border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:14px"></div>
+      <div class="fGrid">
+        <div class="fGrp"><label>Días trabajados</label><input type="number" id="nDias" step="0.5" min="0" oninput="calcN()"></div>
+        <div class="fGrp"><label>Retardos</label><input type="number" id="nRet" step="1" min="0" oninput="calcN()"></div>
+        <div class="fGrp"><label>Faltas</label><input type="number" id="nFalt" step="0.5" min="0" oninput="calcN()"></div>
+        <div class="fGrp"><label>Horas extra</label><input type="number" id="nHE" step="0.5" min="0" oninput="calcN()"></div>
+        <div class="fGrp"><label>Bonos ($)</label><input type="number" id="nBon" step="0.01" min="0" oninput="calcN()"></div>
+        <div class="fGrp"><label>Penalizaciones ($)</label><input type="number" id="nPen" step="0.01" min="0" oninput="calcN()"></div>
+      </div>
+      <div style="background:var(--acc-l);border-radius:8px;padding:14px 16px;margin:14px 0">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px">
+          <span>Salario bruto calculado:</span><strong class="money" id="nBrDisp">$0.00</strong>
+        </div>
+        <div style="margin-bottom:6px">
+          <label style="font-size:12px;font-weight:600;color:var(--gray)">Deducciones manuales ($) — IMSS/ISR/préstamos</label>
+          <input type="number" id="nDed" step="0.01" min="0" placeholder="0.00" oninput="calcN()"
+            style="margin-top:4px;padding:6px 9px;border:1.5px solid var(--border);border-radius:6px;font-size:13px;width:140px">
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:13px;color:var(--red)">
+          <span>Descuentos parcialidades:</span><strong class="money" id="nDcDisp">$0.00</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:17px;font-weight:800;color:var(--navy)">
+          <span>NETO A PAGAR:</span><span class="money" id="nNetoDisp">$0.00</span>
+        </div>
+      </div>
+      <div class="fGrp"><label>Observaciones</label><input type="text" id="nObs" placeholder="Opcional"></div>
+      <div class="fAct">
+        <button class="btn btn-g" onclick="CM('mNom')">Cancelar</button>
+        <button class="btn btn-s" onclick="saveNomDet()">💾 Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL DESCUENTO -->
+<div class="mOv" id="mDc">
+  <div class="modal" style="max-width:480px">
+    <div class="mHdr"><h3 id="mDcTit">Nuevo Descuento</h3><button class="mX" onclick="CM('mDc')">×</button></div>
+    <div class="mBody">
+      <input type="hidden" id="dcId">
+      <div class="fGrid" style="grid-template-columns:1fr">
+        <div class="fGrp"><label>Empleado *</label>
+          <select id="dcEmpSel" style="padding:8px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:13px"></select></div>
+        <div class="fGrp"><label>Tipo</label>
+          <select id="dcTipo" style="padding:8px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:13px">
+            <option value="prestamo">Préstamo</option>
+            <option value="sancion">Sanción</option>
+            <option value="venta">Venta en parcialidades</option>
+          </select></div>
+        <div class="fGrp"><label>Descripción</label><input type="text" id="dcDesc" placeholder="Ej. Anticipo quincena / Celular en abonos…"></div>
+        <div class="fGrp"><label>Monto total ($)</label><input type="number" id="dcMTotal" step="0.01" min="0" oninput="calcCuota()"></div>
+        <div class="fGrp"><label>Número de cuotas (máx 12)</label>
+          <input type="number" id="dcCuotas" step="1" min="1" max="12" value="1" oninput="calcCuota()"></div>
+        <div style="background:var(--acc-l);border-radius:8px;padding:12px 14px;font-size:13px">
+          <strong>Cuota por periodo: </strong><span class="money" id="dcCuotaDisp">$0.00</span>
+          <br><span style="color:var(--gray);font-size:12px">Se descuenta automáticamente al cerrar cada periodo</span>
+        </div>
+      </div>
+      <div class="fAct">
+        <button class="btn btn-g" onclick="CM('mDc')">Cancelar</button>
+        <button class="btn btn-s" onclick="saveDc()">💾 Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL PAGO EXTRAORDINARIO -->
+<div class="mOv" id="mPE">
+  <div class="modal" style="max-width:440px">
+    <div class="mHdr"><h3>Pago Extraordinario</h3><button class="mX" onclick="CM('mPE')">×</button></div>
+    <div class="mBody">
+      <div class="fGrid" style="grid-template-columns:1fr">
+        <div class="fGrp"><label>Empleado</label>
+          <select id="peEmp" style="padding:8px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:13px"></select></div>
+        <div class="fGrp"><label>Tipo</label>
+          <select id="peTipo" style="padding:8px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:13px">
+            <option value="vacaciones">Vacaciones</option>
+            <option value="prima">Prima vacacional</option>
+            <option value="aguinaldo">Aguinaldo</option>
+            <option value="bono">Bono especial</option>
+            <option value="otro">Otro</option>
+          </select></div>
+        <div class="fGrp"><label>Monto ($)</label><input type="number" id="peMonto" step="0.01" placeholder="0.00"></div>
+        <div class="fGrp"><label>Observación</label><input type="text" id="peObs"></div>
+      </div>
+      <div class="fAct">
+        <button class="btn btn-g" onclick="CM('mPE')">Cancelar</button>
+        <button class="btn btn-w" onclick="savePE()">💾 Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL RRHH USUARIO -->
+<div class="mOv" id="mRRHH">
+  <div class="modal" style="max-width:500px">
+    <div class="mHdr"><h3 id="mRRHHTit">Usuario RRHH</h3><button class="mX" onclick="CM('mRRHH')">×</button></div>
+    <div class="mBody">
+      <input type="hidden" id="rrId">
+      <div class="fGrid" style="grid-template-columns:1fr 1fr">
+        <div class="fGrp"><label>Nombre</label><input type="text" id="rrNom"></div>
+        <div class="fGrp"><label>PIN (4 dígitos)</label><input type="password" id="rrPin" maxlength="4"></div>
+      </div>
+      <div style="margin-top:16px">
+        <div style="font-weight:700;font-size:13px;color:var(--navy);margin-bottom:10px">Permisos</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="rp1"> Importar PDF ZKTeco</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="rp2"> Registrar descuentos</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="rp3"> Ver reportes</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="rp4"> Cerrar periodo</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="rp5"> Editar asistencias</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="rp6"> Editar nómina</label>
+        </div>
+      </div>
+      <div class="fAct">
+        <button class="btn btn-g" onclick="CM('mRRHH')">Cancelar</button>
+        <button class="btn btn-s" onclick="saveRRHH()">💾 Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div id="toast" style="position:fixed;bottom:20px;right:20px;z-index:9999;display:none;
+  background:var(--navy);color:#fff;padding:11px 18px;border-radius:10px;
+  box-shadow:var(--shadow-l);font-size:13px;max-width:300px;"></div>
+
+<script>
+// ══════════════════════════════════════════════
+// PRIMERAS LÍNEAS — HELPERS UUID
+// ══════════════════════════════════════════════
+function isUUID(v){return v&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v))}
+function toUUID(v){return isUUID(v)?v:null}
+
+// ══════════════════════════════════════════════
+// CONFIG
+// ══════════════════════════════════════════════
+var SB_URL='https://ckjkdenwqicdjvodflba.supabase.co';
+var SB_KEY='sb_publishable_6kfSTYsmi2KxAeX0AMwymQ_dWPTAxYz';
+var sb=supabase.createClient(SB_URL,SB_KEY);
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+var CU=null; // currentUser
+var empList=[]; // global employees cache
+var calY,calM,asistCache={};
+var pdfParsedData=[];
+var pdfMappings={};
+
+// ══════════════════════════════════════════════
+// UTILS
+// ══════════════════════════════════════════════
+function fmt(n){return'$'+parseFloat(n||0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2})}
+function fmtF(d){if(!d)return'—';var p=d.split('-');return p[2]+'/'+p[1]+'/'+p[0]}
+function fmtDT(d){if(!d)return'—';var dt=new Date(d);return dt.toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}
+function pad(x){return String(x).padStart(2,'0')}
+function toast(msg,type){
+  var t=document.getElementById('toast');
+  t.textContent=msg;
+  t.style.background=type==='error'?'var(--red)':type==='success'?'var(--green)':'var(--navy)';
+  t.style.display='block';
+  setTimeout(function(){t.style.display='none'},3000);
+}
+function OM(id){document.getElementById(id).classList.add('on')}
+function CM(id){document.getElementById(id).classList.remove('on')}
+function $v(id){return document.getElementById(id).value}
+function $sv(id,v){document.getElementById(id).value=v||''}
+function $e(id){return document.getElementById(id)}
+
+function logH(tabla,accion,rid,antes,despues){
+  sb.from('nom_historial').insert({
+    tabla:tabla,accion:accion,registro_id:String(rid||''),
+    datos_antes:antes||null,datos_despues:despues||null,
+    usuario:CU?CU.nombre:'Sistema'
+  }).then(function(){}).catch(function(){});
+}
+
+// ══════════════════════════════════════════════
+// LOGIN
+// ══════════════════════════════════════════════
+var pinBuf='';
+function PP(d){if(pinBuf.length>=4)return;pinBuf+=d;updDots();if(pinBuf.length===4)setTimeout(checkPin,200)}
+function PD(){pinBuf=pinBuf.slice(0,-1);updDots()}
+function PC(){pinBuf='';updDots()}
+function updDots(){for(var i=1;i<=4;i++)$e('pd'+i).classList.toggle('on',i<=pinBuf.length)}
+function pinErr(m){$e('loginErr').textContent=m;setTimeout(function(){$e('loginErr').textContent=''},2200)}
+
+function checkPin(){
+  var pin=pinBuf;pinBuf='';updDots();
+  if(pin==='0000'){loginOK({nombre:'Administrador',rol:'ADMIN',empId:null,perms:{}});return}
+  // Check RRHH users
+  sb.from('nom_rrhh_usuarios').select('*').eq('pin',pin).eq('activo',true).then(function(r){
+    if(r.data&&r.data.length){
+      var u=r.data[0];
+      loginOK({nombre:u.nombre,rol:'RRHH',empId:null,perms:{
+        importar:u.perm_importar_pdf,descuentos:u.perm_descuentos,
+        reportes:u.perm_reportes,cerrar:u.perm_cerrar_periodo,
+        asistencias:u.perm_editar_asistencias,nomina:u.perm_editar_nomina
+      }});
+      return;
+    }
+    // Check employees
+    sb.from('nom_empleados').select('id,nombre,pin_acceso').eq('activo',true).then(function(re){
+      var found=null;
+      (re.data||[]).forEach(function(e){if(e.pin_acceso===pin)found=e});
+      if(found){loginOK({nombre:found.nombre,rol:'EMPLEADO',empId:found.id,perms:{}});}
+      else{pinErr('PIN incorrecto');}
+    });
+  });
+}
+
+function loginOK(user){
+  CU=user;
+  localStorage.setItem('coe_nom_s',JSON.stringify(CU));
+  $e('loginScreen').style.display='none';
+  $e('appShell').style.display='block';
+  $e('hName').textContent=CU.nombre;
+  $e('hRol').textContent=CU.rol;
+  applyPerms();
+  loadAllEmps(function(){ST('empleados')});
+}
+
+function applyPerms(){
+  var isAdmin=CU.rol==='ADMIN';
+  var p=CU.perms||{};
+  // Show admin-only tabs
+  document.querySelectorAll('.admin-only').forEach(function(el){
+    el.classList.toggle('hidden',!isAdmin);
+  });
+  // Permission-based buttons
+  document.querySelectorAll('.perm-importar').forEach(function(el){
+    el.classList.toggle('hidden',!isAdmin&&!p.importar);
+  });
+  document.querySelectorAll('.perm-descuentos').forEach(function(el){
+    el.classList.toggle('hidden',!isAdmin&&!p.descuentos);
+  });
+  document.querySelectorAll('.perm-cerrar').forEach(function(el){
+    el.classList.toggle('hidden',!isAdmin&&!p.cerrar);
+  });
+}
+
+function logout(){
+  CU=null;localStorage.removeItem('coe_nom_s');
+  $e('loginScreen').style.display='flex';$e('appShell').style.display='none';
+  pinBuf='';updDots();
+}
+
+// Restore session
+(function(){
+  var s=localStorage.getItem('coe_nom_s');
+  if(s){try{var u=JSON.parse(s);if(u&&u.nombre)loginOK(u)}catch(e){}}
+})();
+
+// Keyboard PIN
+document.addEventListener('keydown',function(e){
+  if($e('loginScreen').style.display==='none')return;
+  if(e.key>='0'&&e.key<='9')PP(e.key);
+  if(e.key==='Backspace')PD();
+  if(e.key==='Escape')PC();
+});
+
+// ══════════════════════════════════════════════
+// NAVIGATION
+// ══════════════════════════════════════════════
+function ST(name){
+  document.querySelectorAll('.tabPane').forEach(function(p){p.classList.remove('on')});
+  document.querySelectorAll('.nTab').forEach(function(t){t.classList.remove('on')});
+  var tp=$e('tab-'+name);if(tp)tp.classList.add('on');
+  document.querySelectorAll('.nTab').forEach(function(t){if(t.dataset.tab===name)t.classList.add('on')});
+  var loaders={
+    empleados:loadEmps,asistencias:function(){loadAsistEmpList()},
+    nomina:function(){setPeriodo('q')},
+    descuentos:loadDescuentos,recibos:loadRcEmpList,
+    reportes:loadReportes,historial:loadHistorial,config:loadConfig
+  };
+  if(loaders[name])loaders[name]();
+}
+
+// ══════════════════════════════════════════════
+// EMPLOYEES
+// ══════════════════════════════════════════════
+function loadAllEmps(cb){
+  sb.from('nom_empleados').select('*').eq('activo',true).order('nombre').then(function(r){
+    empList=r.data||[];
+    fillEmpSelects();
+    if(cb)cb();
+  });
+}
+
+function loadEmps(){
+  $e('empContent').innerHTML='<div class="loading"><div class="spin"></div>Cargando…</div>';
+  loadAllEmps(function(){
+    if(!empList.length){
+      $e('empContent').innerHTML='<div class="card" style="text-align:center;padding:40px;color:var(--gray)">No hay empleados.<br><br><button class="btn btn-n" onclick="openEmp()">+ Agregar primero</button></div>';
+      return;
+    }
+    var h='<div class="card"><div class="tWrap"><table><thead><tr>'+
+      '<th>Nombre</th><th>Puesto</th><th>Esquema</th><th>Salario/mes</th>'+
+      '<th>Period.</th><th>RFC</th><th>CLABE</th><th></th>'+
+      '</tr></thead><tbody>';
+    empList.forEach(function(e){
+      var eb=e.esquema==='fijo'?'b-g':e.esquema==='honorarios'?'b-b':'b-y';
+      h+='<tr>'+
+        '<td><strong>'+e.nombre+'</strong></td>'+
+        '<td class="muted">'+(e.puesto||'—')+'</td>'+
+        '<td><span class="badge '+eb+'">'+(e.esquema||'—')+'</span></td>'+
+        '<td class="money">'+fmt(e.salario_base)+'</td>'+
+        '<td><span class="badge b-x">'+(e.periodicidad||'—')+'</span></td>'+
+        '<td class="muted">'+(e.rfc||'—')+'</td>'+
+        '<td class="muted" style="font-size:11px">'+(e.clabe?e.clabe.slice(0,6)+'…':'—')+'</td>'+
+        '<td><div class="flex gap6">'+
+          '<button class="btn btn-g sm" onclick=\'editEmp('+JSON.stringify(e)+')\'>✏️</button>'+
+          '<button class="btn btn-d sm" onclick="delEmp(\''+e.id+'\',\''+e.nombre+'\')">🗑</button>'+
+        '</div></td></tr>';
+    });
+    h+='</tbody></table></div></div>';
+    $e('empContent').innerHTML=h;
+  });
+}
+
+function fillEmpSelects(){
+  var ids=['asEmpSel','dcEmpFil','dcEmpSel','peEmp','rcEmpSel'];
+  ids.forEach(function(id){
+    var el=$e(id);if(!el)return;
+    var cur=el.value;
+    el.innerHTML=id==='dcEmpFil'?'<option value="">Todos los empleados</option>':
+      id==='rcEmpSel'?'<option value="">— Empleado —</option><option value="todos">Todos los empleados</option>':
+      '<option value="">— Seleccionar —</option>';
+    empList.forEach(function(e){
+      el.innerHTML+='<option value="'+e.id+'">'+e.nombre+'</option>';
+    });
+    if(cur)el.value=cur;
+  });
+}
+
+function openEmp(){
+  $e('mEmpTit').textContent='Nuevo Empleado';
+  ['eId','eNom','ePuesto','eSal','eFIng','eRFC','eNSS','eBco','eCLABE','ePin'].forEach(function(i){$sv(i,'')});
+  $sv('eEsq','fijo');$sv('ePer','quincenal');
+  OM('mEmp');
+}
+
+function editEmp(e){
+  $e('mEmpTit').textContent='Editar Empleado';
+  $sv('eId',e.id);$sv('eNom',e.nombre);$sv('ePuesto',e.puesto);
+  $sv('eEsq',e.esquema);$sv('eSal',e.salario_base);$sv('ePer',e.periodicidad);
+  $sv('eFIng',e.fecha_ingreso);$sv('eRFC',e.rfc);$sv('eNSS',e.nss);
+  $sv('eBco',e.banco);$sv('eCLABE',e.clabe);$sv('ePin',e.pin_acceso);
+  OM('mEmp');
+}
+
+function saveEmp(){
+  var nom=$v('eNom').trim();
+  if(!nom){toast('Nombre requerido','error');return}
+  var data={nombre:nom,puesto:$v('ePuesto').trim(),esquema:$v('eEsq'),
+    salario_base:parseFloat($v('eSal'))||0,periodicidad:$v('ePer'),
+    fecha_ingreso:$v('eFIng')||null,rfc:$v('eRFC').toUpperCase().trim(),
+    nss:$v('eNSS').trim(),banco:$v('eBco').trim(),clabe:$v('eCLABE').trim(),
+    pin_acceso:$v('ePin'),activo:true};
+  var id=$v('eId');
+  var op=id?sb.from('nom_empleados').update(data).eq('id',id):sb.from('nom_empleados').insert(data).select();
+  op.then(function(r){
+    if(r.error){toast('Error: '+r.error.message,'error');return}
+    logH('nom_empleados',id?'UPDATE':'INSERT',id||'new',id?null:null,data);
+    toast('Empleado guardado','success');CM('mEmp');loadEmps();
+  });
+}
+
+function delEmp(id,nom){
+  if(!confirm('¿Desactivar a '+nom+'?'))return;
+  sb.from('nom_empleados').update({activo:false}).eq('id',id).then(function(r){
+    if(r.error){toast('Error','error');return}
+    logH('nom_empleados','DESACTIVAR',id,{nombre:nom},{activo:false});
+    toast('Empleado desactivado','success');loadEmps();
+  });
+}
+
+// ══════════════════════════════════════════════
+// ASISTENCIAS
+// ══════════════════════════════════════════════
+(function(){var n=new Date();calY=n.getFullYear();calM=n.getMonth();updMes()})();
+function updMes(){var ms=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];$e('mesLbl').textContent=ms[calM]+' '+calY}
+function prevM(){calM--;if(calM<0){calM=11;calY--}updMes();loadCal()}
+function nextM(){calM++;if(calM>11){calM=0;calY++}updMes();loadCal()}
+
+function loadAsistEmpList(){if(empList.length)return;loadAllEmps(function(){})}
+
+function loadCal(){
+  var empId=$v('asEmpSel');if(!empId)return;
+  var fi=calY+'-'+pad(calM+1)+'-01';
+  var ul=new Date(calY,calM+1,0).getDate();
+  var ff=calY+'-'+pad(calM+1)+'-'+pad(ul);
+  sb.from('nom_asistencias').select('*').eq('empleado_id',empId).gte('fecha',fi).lte('fecha',ff).then(function(r){
+    asistCache={};(r.data||[]).forEach(function(a){asistCache[a.fecha]=a});
+    var dt=0,ret=0,ft=0;
+    Object.values(asistCache).forEach(function(a){if(a.falta)ft++;else{dt++;if(a.retardo)ret++}});
+    var emp=empList.find(function(e){return e.id===empId})||{};
+    var h='<div class="stats">'+
+      '<div class="stat g"><div class="sLbl">Días trabajados</div><div class="sVal">'+dt+'</div></div>'+
+      '<div class="stat y"><div class="sLbl">Retardos</div><div class="sVal">'+ret+'</div></div>'+
+      '<div class="stat r"><div class="sLbl">Faltas</div><div class="sVal">'+ft+'</div></div>'+
+      '</div>';
+    h+='<div class="card"><div class="calHead">';
+    ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'].forEach(function(d){h+='<div class="calHD">'+d+'</div>'});
+    h+='</div><div class="calWrap">';
+    var fd=new Date(calY,calM,1).getDay();
+    for(var i=0;i<fd;i++)h+='<div class="cDay other"></div>';
+    for(var d=1;d<=ul;d++){
+      var fs=calY+'-'+pad(calM+1)+'-'+pad(d);
+      var rec=asistCache[fs];
+      var cls='cDay';var info='';
+      var today=new Date();
+      if(d===today.getDate()&&calM===today.getMonth()&&calY===today.getFullYear())cls+=' today';
+      if(rec){
+        if(rec.falta){cls+=' falta';info='<div class="cDI" style="color:var(--red)">Falta</div>'}
+        else{cls+=rec.retardo?' retrd':' hasD';info=rec.hora_entrada?'<div class="cDI">'+(rec.hora_entrada||'').substring(0,5)+(rec.retardo?' ⚠':'')+' <br>'+(rec.hora_salida||'').substring(0,5)+'</div>':''}
+      }
+      h+='<div class="'+cls+'" onclick="openAsist(\''+fs+'\',\''+empId+'\',\''+emp.nombre+'\')"><div class="cDN">'+d+'</div>'+info+'</div>';
+    }
+    h+='</div></div>';
+    $e('asContent').innerHTML=h;
+  });
+}
+
+function openAsist(fecha,empId,empNom){
+  var rec=asistCache[fecha]||{};
+  $sv('aId',rec.id||'');$sv('aFecha',fecha);$sv('aEmpId',empId);
+  $e('aLabel').textContent='📅 '+fmtF(fecha)+' — '+empNom;
+  $sv('aEnt',rec.hora_entrada?rec.hora_entrada.substring(0,5):'');
+  $sv('aSal',rec.hora_salida?rec.hora_salida.substring(0,5):'');
+  $sv('aCS',rec.hora_comida_salida?rec.hora_comida_salida.substring(0,5):'');
+  $sv('aCR',rec.hora_comida_regreso?rec.hora_comida_regreso.substring(0,5):'');
+  $e('aFalta').checked=rec.falta||false;
+  $e('aRetardo').checked=rec.retardo||false;
+  $sv('aObs',rec.observacion||'');
+  $e('mAsistTit').textContent=(rec.id?'Editar':'Registrar')+' Asistencia';
+  OM('mAsist');
+}
+
+function saveAsist(){
+  var empId=$v('aEmpId');var fecha=$v('aFecha');
+  var ent=$v('aEnt');var falta=$e('aFalta').checked;
+  var antes=asistCache[fecha]||null;
+  var retardo=$e('aRetardo').checked;
+  if(ent&&!falta){var p=ent.split(':').map(Number);if(p[0]>9||(p[0]===9&&p[1]>0))retardo=true}
+  var cs=$v('aCS');var cr=$v('aCR');var cExc=false;
+  if(cs&&cr){var ts=cs.split(':').map(Number);var tr=cr.split(':').map(Number);if((tr[0]*60+tr[1])-(ts[0]*60+ts[1])>60)cExc=true}
+  var data={empleado_id:empId,fecha:fecha,
+    hora_entrada:ent||null,hora_salida:$v('aSal')||null,
+    hora_comida_salida:cs||null,hora_comida_regreso:cr||null,
+    retardo:retardo,comida_excedida:cExc,falta:falta,
+    observacion:$v('aObs'),fuente:'manual'};
+  var existId=$v('aId');
+  var op=existId?sb.from('nom_asistencias').update(data).eq('id',existId):
+    sb.from('nom_asistencias').upsert(data,{onConflict:'empleado_id,fecha'});
+  op.then(function(r){
+    if(r.error){toast('Error: '+r.error.message,'error');return}
+    logH('nom_asistencias',existId?'UPDATE':'INSERT',existId||fecha,antes,data);
+    toast('Asistencia guardada','success');CM('mAsist');loadCal();
+  });
+}
+
+// ══════════════════════════════════════════════
+// PDF IMPORT (ZKTeco)
+// ══════════════════════════════════════════════
+function openPDFImport(){
+  $e('pdfStep1').classList.remove('hidden');
+  $e('pdfStep2').classList.add('hidden');
+  $e('pdfLoading').classList.add('hidden');
+  $e('pdfFile').value='';
+  pdfParsedData=[];pdfMappings={};
+  OM('mPDF');
+}
+
+function handlePDF(input){
+  var file=input.files[0];if(!file)return;
+  $e('pdfLoading').classList.remove('hidden');
+  $e('pdfDrop').classList.add('hidden');
+  var reader=new FileReader();
+  reader.onload=function(e){
+    pdfjsLib.getDocument({data:e.target.result}).promise.then(function(pdf){
+      var pages=[];
+      for(var i=1;i<=pdf.numPages;i++)pages.push(i);
+      var allText='';
+      var done=0;
+      pages.forEach(function(pn){
+        pdf.getPage(pn).then(function(page){
+          page.getTextContent().then(function(tc){
+            // Sort by y then x for proper column reading
+            var items=tc.items.slice().sort(function(a,b){
+              var dy=Math.round(b.transform[5]/5)*5-Math.round(a.transform[5]/5)*5;
+              return dy!==0?dy:a.transform[4]-b.transform[4];
+            });
+            allText+=items.map(function(i){return i.str}).join(' ')+'\n';
+            done++;
+            if(done===pages.length){
+              var parsed=parseZKTeco(allText);
+              if(!parsed.length){toast('No se encontraron datos en el PDF','error');$e('pdfLoading').classList.add('hidden');$e('pdfDrop').classList.remove('hidden');return}
+              pdfParsedData=parsed;
+              showMapping(parsed);
+            }
+          });
+        });
+      });
+    }).catch(function(err){
+      toast('Error leyendo PDF: '+err.message,'error');
+      $e('pdfLoading').classList.add('hidden');$e('pdfDrop').classList.remove('hidden');
+    });
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function parseZKTeco(text){
+  // Normalize
+  text=text.replace(/\s+/g,' ');
+  var results=[];
+  // Split by "ID [number]" blocks
+  var blocks=text.split(/(?=\bID\s+\d+\b)/i);
+  blocks.forEach(function(block){
+    var idM=block.match(/\bID\s+(\d+)\b/i);if(!idM)return;
+    var nomM=block.match(/\bNombre\s+(.+?)\s+(?:Departamento|Depar)/i);
+    if(!nomM)return;
+    var nombre=nomM[1].trim().replace(/\s+\d+\s*$/,'').trim(); // strip trailing ID number
+    var registros=[];
+    var re=/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2})\s+(Entrada|Salida)/gi;
+    var m;while((m=re.exec(block))!==null){
+      registros.push({fecha:m[1],hora:m[2],tipo:m[3]});
+    }
+    if(registros.length>0)results.push({id_zk:idM[1],nombre_pdf:nombre,registros:registros});
+  });
+  return results;
+}
+
+function showMapping(parsed){
+  $e('pdfLoading').classList.add('hidden');
+  $e('pdfStep1').classList.add('hidden');
+  $e('pdfStep2').classList.remove('hidden');
+  $e('pdfInfo').textContent='Se encontraron '+parsed.length+' empleados en el PDF. Asigna cada nombre a su empleado en BD.';
+  // Load saved mappings
+  sb.from('nom_pdf_mapeo').select('*').then(function(r){
+    var saved={};(r.data||[]).forEach(function(m){saved[m.nombre_pdf]=m.empleado_id});
+    var h='';
+    parsed.forEach(function(p,i){
+      var savedEmp=saved[p.nombre_pdf]||'';
+      var matched=savedEmp?'matched':'unmatched';
+      pdfMappings[p.nombre_pdf]=savedEmp;
+      h+='<div class="mapRow">'+
+        '<div class="mapPDF">📋 '+p.nombre_pdf+'<br><span style="color:var(--gray);font-size:11px">'+p.registros.length+' registros</span></div>'+
+        '<div class="mapArrow">→</div>'+
+        '<select class="mapSel '+matched+'" id="map_'+i+'" onchange="setMap(\''+p.nombre_pdf+'\',this)">'+
+        '<option value="">— Seleccionar empleado —</option>'+
+        empList.map(function(e){return'<option value="'+e.id+'"'+(e.id===savedEmp?' selected':'')+'>'+e.nombre+'</option>'}).join('')+
+        '</select>'+
+        '</div>';
+    });
+    $e('pdfMapList').innerHTML=h;
+  });
+}
+
+function setMap(nombrePdf,sel){
+  pdfMappings[nombrePdf]=sel.value;
+  sel.className='mapSel '+(sel.value?'matched':'unmatched');
+}
+
+function confirmarImport(){
+  var unassigned=pdfParsedData.filter(function(p){return!pdfMappings[p.nombre_pdf]});
+  if(unassigned.length>0){toast(unassigned.length+' empleados sin asignar','error');return}
+  // Save mappings
+  var mapRows=Object.keys(pdfMappings).map(function(k){return{nombre_pdf:k,empleado_id:pdfMappings[k]}});
+  sb.from('nom_pdf_mapeo').upsert(mapRows,{onConflict:'nombre_pdf'}).then(function(){});
+  // Process attendance
+  var allInserts=[];
+  pdfParsedData.forEach(function(p){
+    var empId=pdfMappings[p.nombre_pdf];
+    if(!empId)return;
+    var byDate={};
+    p.registros.forEach(function(r){
+      var pts=r.fecha.split('/');
+      var fi=pts[2]+'-'+pts[1]+'-'+pts[0]; // YYYY-MM-DD
+      if(!byDate[fi])byDate[fi]=[];
+      byDate[fi].push({h:r.hora,t:r.tipo});
+    });
+    Object.keys(byDate).forEach(function(fecha){
+      var punches=byDate[fecha].sort(function(a,b){return a.h.localeCompare(b.h)});
+      var ents=punches.filter(function(x){return x.t.toLowerCase()==='entrada'});
+      var sals=punches.filter(function(x){return x.t.toLowerCase()==='salida'});
+      var ent=ents[0]?ents[0].h:null;
+      var sal=sals[sals.length-1]?sals[sals.length-1].h:null;
+      var cs=sals[0]&&sals.length>1?sals[0].h:null;
+      var cr=ents[1]?ents[1].h:null;
+      var retardo=false;
+      if(ent){var pp=ent.split(':').map(Number);if(pp[0]>9||(pp[0]===9&&pp[1]>0))retardo=true}
+      var cExc=false;
+      if(cs&&cr){var ts=cs.split(':').map(Number);var tr2=cr.split(':').map(Number);if((tr2[0]*60+tr2[1])-(ts[0]*60+ts[1])>60)cExc=true}
+      allInserts.push({empleado_id:empId,fecha:fecha,
+        hora_entrada:ent,hora_salida:sal,
+        hora_comida_salida:cs,hora_comida_regreso:cr,
+        retardo:retardo,comida_excedida:cExc,falta:!ent,fuente:'pdf_zkteco'});
+    });
+  });
+  if(!allInserts.length){toast('No se generaron registros','error');return}
+  // Batch insert in chunks
+  var chunkSize=50;var chunks=[];
+  for(var i=0;i<allInserts.length;i+=chunkSize)chunks.push(allInserts.slice(i,i+chunkSize));
+  var chain=Promise.resolve();
+  chunks.forEach(function(chunk){
+    chain=chain.then(function(){
+      return sb.from('nom_asistencias').upsert(chunk,{onConflict:'empleado_id,fecha'});
+    });
+  });
+  chain.then(function(){
+    toast('Importados '+allInserts.length+' registros de asistencia','success');
+    logH('nom_asistencias','IMPORT_PDF','batch',null,{registros:allInserts.length});
+    CM('mPDF');
+    if($v('asEmpSel'))loadCal();
+  }).catch(function(e){toast('Error importando: '+e.message,'error')});
+}
+
+// ══════════════════════════════════════════════
+// NÓMINA
+// ══════════════════════════════════════════════
+function setPeriodo(tipo){
+  var n=new Date();var y=n.getFullYear(),mo=n.getMonth(),d=n.getDate();
+  var ini,fin;
+  if(tipo==='q'){
+    if(d<=15){ini=new Date(y,mo,1);fin=new Date(y,mo,15)}
+    else{ini=new Date(y,mo,16);fin=new Date(y,mo+1,0)}
+  }else{ini=new Date(y,mo,1);fin=new Date(y,mo+1,0)}
+  $sv('pIni',y+'-'+pad(mo+1)+'-'+pad(ini.getDate()));
+  $sv('pFin',y+'-'+pad(mo+1)+'-'+pad(fin.getDate()));
+  updFechaPago();loadNom();
+}
+
+function updFechaPago(){
+  var fi=$v('pFin');if(!fi)return;
+  var d=parseInt(fi.split('-')[2]);
+  var fp=d<=15?fi.substring(0,8)+'15':fi.substring(0,5)+'-'+fi.split('-')[1]+'-30';
+  $e('fechaPagoLbl').textContent='Fecha de pago: '+fmtF(fp);
+}
+
+function getFechaPago(){
+  var fi=$v('pFin');if(!fi)return fi;
+  var parts=fi.split('-');var d=parseInt(parts[2]);
+  return d<=15?(parts[0]+'-'+parts[1]+'-15'):(parts[0]+'-'+parts[1]+'-30');
+}
+
+var nomRows={};
+
+function loadNom(){
+  var pi=$v('pIni'),pf=$v('pFin');if(!pi||!pf)return;
+  updFechaPago();
+  $e('nomContent').innerHTML='<div class="loading"><div class="spin"></div>Cargando…</div>';
+  if(!empList.length){loadAllEmps(function(){doLoadNom(pi,pf)});}
+  else doLoadNom(pi,pf);
+}
+
+function doLoadNom(pi,pf){
+  sb.from('nom_periodos').select('*').eq('fecha_inicio',pi).eq('fecha_fin',pf).then(function(r){
+    nomRows={};(r.data||[]).forEach(function(row){nomRows[row.empleado_id]=row});
+    renderNom(pi,pf);
+  });
+}
+
+function renderNom(pi,pf){
+  var totalB=0,totalN=0;
+  var h='<div class="card"><div class="tWrap"><table><thead><tr>'+
+    '<th>Empleado</th><th>Días</th><th>Ret.</th><th>Faltas</th>'+
+    '<th>Bonos</th><th>Penal.</th><th>Bruto</th><th>Deducc.</th><th>Desc.Parc.</th><th>NETO</th><th>Estado</th><th></th>'+
+    '</tr></thead><tbody>';
+  empList.forEach(function(emp){
+    var row=nomRows[emp.id];
+    var cerrado=row&&row.cerrado;
+    var bruto=row?row.salario_bruto:0;
+    var neto=row?row.salario_neto:0;
+    totalB+=bruto;totalN+=neto;
+    h+='<tr>'+
+      '<td><strong>'+emp.nombre+'</strong><br><span class="muted">'+(emp.puesto||'')+'</span></td>'+
+      '<td>'+(row?row.dias_trabajados:'—')+'</td>'+
+      '<td>'+(row&&row.retardos?'<span style="color:var(--yellow);font-weight:700">'+row.retardos+'</span>':'—')+'</td>'+
+      '<td>'+(row&&row.faltas?'<span style="color:var(--red);font-weight:700">'+row.faltas+'</span>':'—')+'</td>'+
+      '<td class="money">'+(row?fmt(row.bonos):'—')+'</td>'+
+      '<td class="money">'+(row?fmt(row.penalizaciones):'—')+'</td>'+
+      '<td class="money">'+(row?fmt(row.salario_bruto):'—')+'</td>'+
+      '<td class="money">'+(row?fmt(row.deducciones_manuales):'—')+'</td>'+
+      '<td class="money" style="color:var(--red)">'+(row&&row.descuentos_parcialidades?fmt(row.descuentos_parcialidades):'—')+'</td>'+
+      '<td class="money" style="color:var(--green);font-weight:800">'+(row?fmt(row.salario_neto):'—')+'</td>'+
+      '<td>'+(cerrado?'<span class="badge b-g">Cerrado</span>':'<span class="badge b-y">Borrador</span>')+'</td>'+
+      '<td>'+(cerrado?'':'<button class="btn btn-n sm" onclick=\'openNomDet('+JSON.stringify(emp)+','+(row?JSON.stringify(row):'null')+')\'>✏️</button>')+'</td>'+
+    '</tr>';
+  });
+  h+='</tbody><tfoot><tr style="background:var(--navy);color:#fff">'+
+    '<td colspan="6" style="padding:11px 13px;font-weight:700">TOTALES PERIODO</td>'+
+    '<td class="money" style="color:#fff;padding:11px 13px">'+fmt(totalB)+'</td>'+
+    '<td colspan="2"></td>'+
+    '<td class="money" style="color:#86efac;padding:11px 13px;font-size:16px;font-weight:900">'+fmt(totalN)+'</td>'+
+    '<td colspan="2"></td></tr></tfoot></table></div></div>';
+  $e('nomContent').innerHTML=h;
+}
+
+function openNomDet(emp,row){
+  $sv('nEId',emp.id);$sv('nPId',row?row.id:'');
+  $e('nEsq').dataset.esq=emp.esquema;$e('nEsq').dataset.sal=emp.salario_base;
+  $e('nEsq').dataset.bruto=0;$e('nEsq').dataset.neto=0;
+  $e('nInfo').innerHTML='<strong>'+emp.nombre+'</strong> — '+(emp.puesto||'')+
+    ' | Esquema: <strong>'+emp.esquema+'</strong> | Base: <strong>'+fmt(emp.salario_base)+'/mes</strong>';
+  var pi=$v('pIni'),pf=$v('pFin');
+  var diasP=pi&&pf?Math.round((new Date(pf)-new Date(pi))/86400000)+1:15;
+  var diasHab=Math.round(diasP*5/7);
+  $sv('nDias',row?row.dias_trabajados:diasHab);
+  $sv('nRet',row?row.retardos:0);$sv('nFalt',row?row.faltas:0);
+  $sv('nHE',row?row.horas_extra:0);$sv('nBon',row?row.bonos:0);
+  $sv('nPen',row?row.penalizaciones:0);$sv('nDed',row?row.deducciones_manuales:0);
+  $sv('nObs',row?row.observaciones:'');
+  // Load active descuentos for this employee
+  sb.from('nom_descuentos').select('*').eq('empleado_id',emp.id).eq('activo',true).then(function(r){
+    var totalDc=0;(r.data||[]).forEach(function(d){totalDc+=parseFloat(d.monto_cuota)||0});
+    $e('nDcDisp').textContent=fmt(totalDc);
+    $e('nEsq').dataset.dc=totalDc;
+    calcN();
+  });
+  $e('mNomTit').textContent='Nómina — '+emp.nombre;
+  OM('mNom');
+}
+
+function calcN(){
+  var esq=$e('nEsq').dataset.esq||'fijo';
+  var sal=parseFloat($e('nEsq').dataset.sal)||0;
+  var dc=parseFloat($e('nEsq').dataset.dc)||0;
+  var dias=parseFloat($v('nDias'))||0;
+  var ret=parseInt($v('nRet'))||0;
+  var falt=parseFloat($v('nFalt'))||0;
+  var bon=parseFloat($v('nBon'))||0;
+  var pen=parseFloat($v('nPen'))||0;
+  var ded=parseFloat($v('nDed'))||0;
+  var pi=$v('pIni'),pf=$v('pFin');
+  var diasP=pi&&pf?Math.round((new Date(pf)-new Date(pi))/86400000)+1:15;
+  var bruto=0;
+  var salDiario=sal/30;
+  if(esq==='fijo')bruto=salDiario*dias;
+  else if(esq==='honorarios')bruto=sal*diasP/30;
+  else bruto=sal*diasP/30;
+  if((esq==='fijo')&&falt>0)bruto-=salDiario*falt;
+  if((esq==='fijo')&&ret>0)bruto-=(salDiario/8*0.25)*ret;
+  bruto+=bon-pen;if(bruto<0)bruto=0;
+  var neto=bruto-ded-dc;if(neto<0)neto=0;
+  $e('nBrDisp').textContent=fmt(bruto);
+  $e('nNetoDisp').textContent=fmt(neto);
+  $e('nEsq').dataset.bruto=bruto;$e('nEsq').dataset.neto=neto;
+}
+
+function saveNomDet(){
+  var empId=$v('nEId');var pId=$v('nPId');
+  var bruto=parseFloat($e('nEsq').dataset.bruto)||0;
+  var neto=parseFloat($e('nEsq').dataset.neto)||0;
+  var dc=parseFloat($e('nEsq').dataset.dc)||0;
+  var antes=nomRows[empId]||null;
+  var data={empleado_id:empId,fecha_inicio:$v('pIni'),fecha_fin:$v('pFin'),
+    fecha_pago:getFechaPago(),
+    dias_trabajados:parseFloat($v('nDias'))||0,retardos:parseInt($v('nRet'))||0,
+    faltas:parseFloat($v('nFalt'))||0,horas_extra:parseFloat($v('nHE'))||0,
+    bonos:parseFloat($v('nBon'))||0,penalizaciones:parseFloat($v('nPen'))||0,
+    salario_bruto:bruto,deducciones_manuales:parseFloat($v('nDed'))||0,
+    descuentos_parcialidades:dc,salario_neto:neto,
+    observaciones:$v('nObs'),cerrado:false,tipo:'regular'};
+  var op=pId?sb.from('nom_periodos').update(data).eq('id',pId):
+    sb.from('nom_periodos').insert(data).select();
+  op.then(function(r){
+    if(r.error){toast('Error: '+r.error.message,'error');return}
+    logH('nom_periodos',pId?'UPDATE':'INSERT',pId||'new',antes,data);
+    toast('Nómina guardada','success');CM('mNom');loadNom();
+  });
+}
+
+function cerrarPeriodo(){
+  var pi=$v('pIni'),pf=$v('pFin');
+  if(!confirm('¿Cerrar periodo '+fmtF(pi)+' al '+fmtF(pf)+'?\n\nSe bloqueará edición y se generará egreso en COE Finanzas.'))return;
+  sb.from('nom_periodos').select('id,salario_neto,empleado_id').eq('fecha_inicio',pi).eq('fecha_fin',pf).eq('cerrado',false).then(function(r){
+    if(!r.data||!r.data.length){toast('No hay registros abiertos en este periodo','error');return}
+    var total=r.data.reduce(function(s,x){return s+(x.salario_neto||0)},0);
+    var ids=r.data.map(function(x){return x.id});
+    // Mark closed
+    sb.from('nom_periodos').update({cerrado:true}).in('id',ids).then(function(u){
+      if(u.error){toast('Error cerrando','error');return}
+      // Apply descuentos automáticos
+      applyDescuentosPeriodo(r.data,pi,pf);
+      // Insert egreso fin_facturas
+      var fp=getFechaPago();
+      var egreso={
+        proveedor:'Nómina',
+        concepto:'Nómina '+fmtF(pi)+' – '+fmtF(pf),
+        monto:total,tipo:'egreso',fecha:fp
+      };
+      sb.from('fin_facturas').insert(egreso).then(function(fe){
+        var msg='Periodo cerrado. ';
+        if(fe.error)msg+='(Egreso no registrado: tabla fin_facturas no encontrada)';
+        else msg+='Egreso de '+fmt(total)+' registrado en COE Finanzas.';
+        toast(msg,'success');
+        logH('nom_periodos','CERRAR_PERIODO',pi+'_'+pf,null,{total:total,egreso:fp});
+        loadNom();
+      });
+    });
+  });
+}
+
+function applyDescuentosPeriodo(periodoRows,pi,pf){
+  periodoRows.forEach(function(pr){
+    sb.from('nom_descuentos').select('*').eq('empleado_id',pr.empleado_id).eq('activo',true).then(function(r){
+      (r.data||[]).forEach(function(dc){
+        if(dc.cuotas_pagadas>=dc.cuotas_total)return;
+        var newPagadas=dc.cuotas_pagadas+1;
+        var stillActive=newPagadas<dc.cuotas_total;
+        sb.from('nom_descuentos').update({cuotas_pagadas:newPagadas,activo:stillActive}).eq('id',dc.id).then(function(){});
+        sb.from('nom_descuento_pagos').insert({descuento_id:dc.id,periodo_id:pr.id,
+          empleado_id:pr.empleado_id,monto:dc.monto_cuota,fecha_pago:pf}).then(function(){});
+      });
+    });
+  });
+}
+
+function openPagoExtra(){
+  if(!empList.length){toast('Carga empleados primero','error');return}
+  fillEmpSelects();
+  OM('mPE');
+}
+
+function savePE(){
+  var empId=$v('peEmp');var monto=parseFloat($v('peMonto'))||0;
+  if(!empId||!monto){toast('Empleado y monto requeridos','error');return}
+  var n=new Date();var fecha=n.getFullYear()+'-'+pad(n.getMonth()+1)+'-'+pad(n.getDate());
+  var data={empleado_id:empId,fecha_inicio:fecha,fecha_fin:fecha,fecha_pago:getFechaPago()||fecha,
+    dias_trabajados:0,retardos:0,faltas:0,horas_extra:0,
+    bonos:monto,penalizaciones:0,salario_bruto:monto,
+    descuentos_parcialidades:0,deducciones_manuales:0,salario_neto:monto,
+    observaciones:$v('peTipo')+': '+$v('peObs'),tipo:$v('peTipo'),cerrado:false};
+  sb.from('nom_periodos').insert(data).then(function(r){
+    if(r.error){toast('Error','error');return}
+    toast('Pago extraordinario guardado','success');CM('mPE');
+  });
+}
+
+// ══════════════════════════════════════════════
+// DESCUENTOS
+// ══════════════════════════════════════════════
+function loadDescuentos(){
+  var empF=$v('dcEmpFil');var tipoF=$v('dcTipoFil');
+  var soloAct=$e('dcSoloActivos').checked;
+  $e('dcContent').innerHTML='<div class="loading"><div class="spin"></div>Cargando…</div>';
+  var q=sb.from('nom_descuentos').select('*, nom_empleados(nombre,puesto)').order('created_at',{ascending:false});
+  if(empF)q=q.eq('empleado_id',empF);
+  if(tipoF)q=q.eq('tipo',tipoF);
+  if(soloAct)q=q.eq('activo',true);
+  q.then(function(r){
+    var data=r.data||[];
+    if(!data.length){
+      $e('dcContent').innerHTML='<div class="card" style="text-align:center;padding:40px;color:var(--gray)">No hay descuentos registrados.</div>';
+      return;
+    }
+    var h='<div class="card"><div class="cardTit">Descuentos en Parcialidades</div>';
+    data.forEach(function(d){
+      var pct=d.cuotas_total>0?Math.round(d.cuotas_pagadas/d.cuotas_total*100):0;
+      var barCls=pct>=100?'done':pct>=60?'warn':'';
+      var emp=d.nom_empleados||{};
+      var tipoBdg=d.tipo==='prestamo'?'b-b':d.tipo==='sancion'?'b-r':'b-p';
+      var tipoLabel=d.tipo==='prestamo'?'Préstamo':d.tipo==='sancion'?'Sanción':'Venta Parcial.';
+      h+='<div class="dcCard">'+
+        '<div class="dcHeader">'+
+          '<div>'+
+            '<span class="badge '+tipoBdg+'">'+tipoLabel+'</span> <strong>'+(d.descripcion||'Sin descripción')+'</strong>'+
+            '<span class="muted" style="margin-left:8px">'+(emp.nombre||'—')+'</span>'+
+          '</div>'+
+          '<div style="display:flex;gap:6px;align-items:center">'+
+            (d.activo?'<span class="badge b-g">Activo</span>':'<span class="badge b-x">Liquidado</span>')+
+            (CU&&(CU.rol==='ADMIN'||(CU.perms&&CU.perms.descuentos))?
+              '<button class="btn btn-d sm" onclick="cancelDc(\''+d.id+'\')">Cancelar</button>':'')+
+          '</div>'+
+        '</div>'+
+        '<div class="dcBars"><div class="dcBar '+barCls+'" style="width:'+pct+'%"></div></div>'+
+        '<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--gray)">'+
+          '<span>'+d.cuotas_pagadas+' / '+d.cuotas_total+' cuotas pagadas</span>'+
+          '<span>Cuota: <strong class="money">'+fmt(d.monto_cuota)+'</strong> | Total: <strong class="money">'+fmt(d.monto_total)+'</strong></span>'+
+        '</div>'+
+      '</div>';
+    });
+    h+='</div>';
+    $e('dcContent').innerHTML=h;
+  });
+}
+
+function openDescuento(){
+  if(!empList.length){toast('Carga empleados primero','error');return}
+  fillEmpSelects();
+  $sv('dcId','');$sv('dcDesc','');$sv('dcMTotal','');$sv('dcCuotas',1);
+  $e('dcCuotaDisp').textContent='$0.00';
+  OM('mDc');
+}
+
+function calcCuota(){
+  var total=parseFloat($v('dcMTotal'))||0;
+  var cuotas=parseInt($v('dcCuotas'))||1;
+  $e('dcCuotaDisp').textContent=fmt(cuotas>0?total/cuotas:0);
+}
+
+function saveDc(){
+  var empId=$v('dcEmpSel');
+  if(!empId){toast('Selecciona empleado','error');return}
+  var total=parseFloat($v('dcMTotal'))||0;
+  var cuotas=parseInt($v('dcCuotas'))||1;
+  if(!total||cuotas<1){toast('Monto y cuotas requeridos','error');return}
+  var data={empleado_id:empId,tipo:$v('dcTipo'),
+    descripcion:$v('dcDesc'),monto_total:total,
+    monto_cuota:parseFloat((total/cuotas).toFixed(2)),
+    cuotas_total:cuotas,cuotas_pagadas:0,activo:true,
+    created_by:CU?CU.nombre:'Admin'};
+  sb.from('nom_descuentos').insert(data).then(function(r){
+    if(r.error){toast('Error: '+r.error.message,'error');return}
+    logH('nom_descuentos','INSERT','new',null,data);
+    toast('Descuento registrado','success');CM('mDc');loadDescuentos();
+  });
+}
+
+function cancelDc(id){
+  if(!confirm('¿Cancelar este descuento?'))return;
+  sb.from('nom_descuentos').update({activo:false}).eq('id',id).then(function(r){
+    if(r.error){toast('Error','error');return}
+    logH('nom_descuentos','CANCELAR',id,null,{activo:false});
+    toast('Descuento cancelado','success');loadDescuentos();
+  });
+}
+
+// ══════════════════════════════════════════════
+// RECIBOS
+// ══════════════════════════════════════════════
+function loadRcEmpList(){
+  if(!empList.length){loadAllEmps(function(){fillEmpSelects()})}
+  else fillEmpSelects();
+}
+
+function loadRecibos(){
+  var empId=$v('rcEmpSel');if(!empId)return;
+  var sel=$e('rcPerSel');
+  sel.innerHTML='<option value="">— Periodo —</option>';
+  var q=empId==='todos'?
+    sb.from('nom_periodos').select('id,fecha_inicio,fecha_fin,cerrado,salario_neto,empleado_id,tipo').order('fecha_inicio',{ascending:false}).limit(30):
+    sb.from('nom_periodos').select('id,fecha_inicio,fecha_fin,cerrado,salario_neto,tipo').eq('empleado_id',empId).order('fecha_inicio',{ascending:false});
+  q.then(function(r){
+    var seen={};
+    (r.data||[]).forEach(function(p){
+      var key=p.fecha_inicio+'_'+p.fecha_fin;
+      if(!seen[key]){
+        seen[key]=true;
+        sel.innerHTML+='<option value="'+p.id+'">'+fmtF(p.fecha_inicio)+' – '+fmtF(p.fecha_fin)+(p.cerrado?' ✓':'')+' '+fmt(p.salario_neto)+'</option>';
+      }
+    });
+    if(r.data&&r.data.length){sel.value=r.data[0].id;loadReciboVista()}
+  });
+}
+
+function loadReciboVista(){
+  var pId=$v('rcPerSel');if(!pId)return;
+  var empId=$v('rcEmpSel');
+  if(empId==='todos'){
+    sb.from('nom_periodos').select('*, nom_empleados(*)').eq('fecha_inicio',$e('rcPerSel').options[$e('rcPerSel').selectedIndex].text.split(' ')[0].replace(/\//g,'-'))
+    .then(function(){});
+    // Fetch by same date range
+    var optText=$e('rcPerSel').options[$e('rcPerSel').selectedIndex].text;
+    sb.from('nom_periodos').select('*, nom_empleados(*)').eq('id',pId).single().then(function(r){
+      if(!r.data)return;
+      var fi=r.data.fecha_inicio,ff=r.data.fecha_fin;
+      sb.from('nom_periodos').select('*, nom_empleados(*)').eq('fecha_inicio',fi).eq('fecha_fin',ff).then(function(all){
+        var h='';
+        (all.data||[]).forEach(function(row){
+          h+=buildRecibo(row.nom_empleados||{},row);
+        });
+        $e('rcContent').innerHTML=h||'<div class="card" style="text-align:center;padding:40px">Sin datos</div>';
+      });
+    });
+  } else {
+    sb.from('nom_periodos').select('*, nom_empleados(*)').eq('id',pId).single().then(function(r){
+      if(!r.data){$e('rcContent').innerHTML='';return}
+      $e('rcContent').innerHTML=buildRecibo(r.data.nom_empleados||{},r.data);
+    });
+  }
+}
+
+function buildRecibo(emp,row){
+  // Load descuentos for this employee in this period
+  var dcDetalle='';
+  if(row.descuentos_parcialidades>0)dcDetalle='<tr style="color:var(--red)"><td>Descuentos parcialidades</td><td style="text-align:right">−'+fmt(row.descuentos_parcialidades)+'</td></tr>';
+  var tipoLabel={regular:'Nómina Regular',vacaciones:'Vacaciones',prima:'Prima Vacacional',aguinaldo:'Aguinaldo',bono:'Bono',otro:'Pago Especial'};
+  return '<div class="reciboSheet">'+
+    '<div class="rHdr">'+
+      '<div><div class="rLogo">COE</div><div style="font-size:11px;color:var(--gray)">Centro Ocular Especializado</div></div>'+
+      '<div style="text-align:right;font-size:12px">'+
+        '<div style="font-size:15px;font-weight:700;color:var(--navy)">'+(tipoLabel[row.tipo]||'Recibo de Nómina').toUpperCase()+'</div>'+
+        '<div>Periodo: '+fmtF(row.fecha_inicio)+' al '+fmtF(row.fecha_fin)+'</div>'+
+        '<div>Fecha de pago: <strong>'+fmtF(row.fecha_pago||row.fecha_fin)+'</strong></div>'+
+        '<div style="margin-top:3px">'+(row.cerrado?'<span class="badge b-g">✅ CERRADO</span>':'<span class="badge b-y">⏳ BORRADOR</span>')+'</div>'+
+      '</div>'+
+    '</div>'+
+    '<hr class="rHr">'+
+    '<div class="rGrid">'+
+      '<div class="rField"><span>Nombre:</span><br><strong>'+(emp.nombre||'—')+'</strong></div>'+
+      '<div class="rField"><span>Puesto:</span><br><strong>'+(emp.puesto||'—')+'</strong></div>'+
+      '<div class="rField"><span>RFC:</span><br>'+(emp.rfc||'—')+'</div>'+
+      '<div class="rField"><span>NSS:</span><br>'+(emp.nss||'—')+'</div>'+
+      '<div class="rField"><span>Banco:</span><br>'+(emp.banco||'—')+'</div>'+
+      '<div class="rField"><span>CLABE:</span><br>'+(emp.clabe||'—')+'</div>'+
+    '</div>'+
+    '<table class="rTable"><thead><tr><th>Concepto</th><th style="text-align:right">Importe</th></tr></thead><tbody>'+
+      '<tr><td>Días trabajados ('+row.dias_trabajados+' días)</td><td style="text-align:right">'+fmt(row.salario_bruto-row.bonos+row.penalizaciones)+'</td></tr>'+
+      (row.retardos?'<tr><td style="color:var(--red)">Descuento por retardos ('+row.retardos+')</td><td style="text-align:right;color:var(--red)">− incluido</td></tr>':'')+
+      (row.faltas?'<tr><td style="color:var(--red)">Descuento por faltas ('+row.faltas+' días)</td><td style="text-align:right;color:var(--red)">− incluido</td></tr>':'')+
+      (row.bonos>0?'<tr><td style="color:var(--green)">Bonos / compensaciones</td><td style="text-align:right;color:var(--green)">'+fmt(row.bonos)+'</td></tr>':'')+
+      (row.penalizaciones>0?'<tr><td style="color:var(--red)">Penalizaciones</td><td style="text-align:right;color:var(--red)">−'+fmt(row.penalizaciones)+'</td></tr>':'')+
+      '<tr style="background:var(--gray-l);font-weight:700"><td>SALARIO BRUTO</td><td style="text-align:right">'+fmt(row.salario_bruto)+'</td></tr>'+
+      (row.deducciones_manuales>0?'<tr style="color:var(--red)"><td>Deducciones (IMSS / ISR / otros)</td><td style="text-align:right">−'+fmt(row.deducciones_manuales)+'</td></tr>':'')+
+      dcDetalle+
+    '</tbody></table>'+
+    '<div class="rNeto">'+
+      '<div class="rNetoLbl">Neto a Pagar</div>'+
+      '<div class="rNetoMonto">'+fmt(row.salario_neto)+'</div>'+
+    '</div>'+
+    '<div class="rFirma"><div style="width:220px;border-top:1px solid #999;margin:0 auto;padding-top:6px">Firma del trabajador</div></div>'+
+    '<div class="rFoot">Centro Ocular Especializado · Luis Donaldo Colosio 160, Tacámbaro, Mich. · Tel. 459-134-5529</div>'+
+  '</div>';
+}
+
+// ══════════════════════════════════════════════
+// REPORTES
+// ══════════════════════════════════════════════
+function loadReportes(){
+  $e('rpContent').innerHTML='<div class="loading"><div class="spin"></div>Cargando…</div>';
+  sb.from('nom_periodos').select('*, nom_empleados(nombre,puesto)').eq('cerrado',true).order('fecha_inicio',{ascending:false}).then(function(r){
+    window._rpData=r.data||[];
+    if(!r.data||!r.data.length){
+      $e('rpContent').innerHTML='<div class="card" style="text-align:center;padding:40px;color:var(--gray)">No hay periodos cerrados aún.</div>';
+      return;
+    }
+    var periods={};
+    r.data.forEach(function(row){
+      var k=row.fecha_inicio+'_'+row.fecha_fin;
+      if(!periods[k])periods[k]={fi:row.fecha_inicio,ff:row.fecha_fin,rows:[],total:0};
+      periods[k].rows.push(row);periods[k].total+=row.salario_neto||0;
+    });
+    var h='<div class="stats">'+
+      '<div class="stat g"><div class="sLbl">Periodos cerrados</div><div class="sVal">'+Object.keys(periods).length+'</div></div>'+
+      '<div class="stat"><div class="sLbl">Total pagado</div><div class="sVal" style="font-size:18px">'+fmt(r.data.reduce(function(s,x){return s+(x.salario_neto||0)},0))+'</div></div>'+
+    '</div>';
+    Object.values(periods).forEach(function(p){
+      h+='<div class="card"><div class="cardTit">📅 '+fmtF(p.fi)+' – '+fmtF(p.ff)+
+        ' <span style="color:var(--green);font-size:14px">Total: '+fmt(p.total)+'</span></div>'+
+        '<div class="tWrap"><table><thead><tr><th>Empleado</th><th>Días</th><th>Bruto</th><th>Ded.</th><th>Desc.Parc.</th><th>NETO</th><th>Tipo</th></tr></thead><tbody>';
+      p.rows.forEach(function(row){
+        h+='<tr><td><strong>'+(row.nom_empleados?row.nom_empleados.nombre:'—')+'</strong></td>'+
+          '<td>'+row.dias_trabajados+'</td><td class="money">'+fmt(row.salario_bruto)+'</td>'+
+          '<td class="money">'+fmt(row.deducciones_manuales)+'</td>'+
+          '<td class="money" style="color:var(--red)">'+fmt(row.descuentos_parcialidades)+'</td>'+
+          '<td class="money" style="color:var(--green);font-weight:800">'+fmt(row.salario_neto)+'</td>'+
+          '<td><span class="badge b-b">'+(row.tipo||'regular')+'</span></td></tr>';
+      });
+      h+='</tbody></table></div></div>';
+    });
+    $e('rpContent').innerHTML=h;
+  });
+}
+
+function exportCSV(){
+  var data=window._rpData;
+  if(!data||!data.length){toast('No hay datos','error');return}
+  var cols=['Empleado','Puesto','Periodo Inicio','Periodo Fin','Fecha Pago','Días','Retardos','Faltas','Bonos','Penal.','Bruto','Deducciones','Desc.Parcialidades','Neto','Tipo','Cerrado'];
+  var rows=[cols.join(',')];
+  data.forEach(function(r){
+    rows.push([
+      '"'+(r.nom_empleados?r.nom_empleados.nombre:'')+'"',
+      '"'+(r.nom_empleados?r.nom_empleados.puesto||'':'')+'"',
+      r.fecha_inicio,r.fecha_fin,r.fecha_pago||'',
+      r.dias_trabajados,r.retardos,r.faltas,
+      r.bonos,r.penalizaciones,r.salario_bruto,
+      r.deducciones_manuales,r.descuentos_parcialidades,r.salario_neto,
+      r.tipo,r.cerrado?'Sí':'No'
+    ].join(','));
+  });
+  var blob=new Blob(['\uFEFF'+rows.join('\n')],{type:'text/csv;charset=utf-8;'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='nomina_coe_'+new Date().toISOString().split('T')[0]+'.csv';a.click();
+  toast('CSV exportado','success');
+}
+
+// ══════════════════════════════════════════════
+// HISTORIAL (ADMIN)
+// ══════════════════════════════════════════════
+function loadHistorial(){
+  var tf=$v('histTabFil');
+  $e('histContent').innerHTML='<div class="loading"><div class="spin"></div>Cargando…</div>';
+  var q=sb.from('nom_historial').select('*').order('created_at',{ascending:false}).limit(200);
+  if(tf)q=q.eq('tabla',tf);
+  q.then(function(r){
+    if(!r.data||!r.data.length){
+      $e('histContent').innerHTML='<div class="card" style="text-align:center;padding:40px;color:var(--gray)">No hay registros en el historial.</div>';
+      return;
+    }
+    var accionBdg={'INSERT':'b-g','UPDATE':'b-b','DELETE':'b-r','DESACTIVAR':'b-r','CERRAR_PERIODO':'b-p','IMPORT_PDF':'b-p','CANCELAR':'b-y'};
+    var h='<div class="card">';
+    r.data.forEach(function(h2){
+      var bdg=accionBdg[h2.accion]||'b-x';
+      h+='<div class="histRow">'+
+        '<span class="badge '+bdg+' histBadge">'+(h2.accion||'—')+'</span>'+
+        '<div class="histInfo">'+
+          '<strong>'+(h2.tabla||'—')+'</strong> <span class="muted">ID: '+(h2.registro_id||'—')+'</span>'+
+          '<br><span class="muted">Por: '+(h2.usuario||'—')+'</span>'+
+          (h2.datos_despues?'<br><span class="muted" style="font-size:11px">'+JSON.stringify(h2.datos_despues).substring(0,120)+'…</span>':'')+
+        '</div>'+
+        '<div class="histTime">'+fmtDT(h2.created_at)+'</div>'+
+      '</div>';
+    });
+    h+='</div>';
+    $e('histContent').innerHTML=h;
+  });
+}
+
+// ══════════════════════════════════════════════
+// CONFIG (ADMIN)
+// ══════════════════════════════════════════════
+function loadConfig(){
+  $e('cfContent').innerHTML='<div class="loading"><div class="spin"></div>Cargando…</div>';
+  sb.from('nom_rrhh_usuarios').select('*').eq('activo',true).order('nombre').then(function(r){
+    if(!r.data||!r.data.length){
+      $e('cfContent').innerHTML='<div class="card" style="text-align:center;padding:40px;color:var(--gray)">No hay usuarios RRHH configurados.<br><br><button class="btn btn-n" onclick="openRRHH()">+ Agregar usuario</button></div>';
+      return;
+    }
+    var h='<div class="card"><div class="cardTit">Usuarios RRHH</div><div class="tWrap"><table><thead><tr>'+
+      '<th>Nombre</th><th>Import PDF</th><th>Descuentos</th><th>Reportes</th><th>Cerrar Periodo</th><th>Edit Asist.</th><th>Edit Nómina</th><th></th>'+
+      '</tr></thead><tbody>';
+    r.data.forEach(function(u){
+      function chk(v){return v?'✅':'—'}
+      h+='<tr>'+
+        '<td><strong>'+u.nombre+'</strong></td>'+
+        '<td style="text-align:center">'+chk(u.perm_importar_pdf)+'</td>'+
+        '<td style="text-align:center">'+chk(u.perm_descuentos)+'</td>'+
+        '<td style="text-align:center">'+chk(u.perm_reportes)+'</td>'+
+        '<td style="text-align:center">'+chk(u.perm_cerrar_periodo)+'</td>'+
+        '<td style="text-align:center">'+chk(u.perm_editar_asistencias)+'</td>'+
+        '<td style="text-align:center">'+chk(u.perm_editar_nomina)+'</td>'+
+        '<td><div class="flex gap6">'+
+          '<button class="btn btn-g sm" onclick=\'editRRHH('+JSON.stringify(u)+')\'>✏️</button>'+
+          '<button class="btn btn-d sm" onclick="delRRHH(\''+u.id+'\',\''+u.nombre+'\')">🗑</button>'+
+        '</div></td></tr>';
+    });
+    h+='</tbody></table></div></div>';
+    $e('cfContent').innerHTML=h;
+  });
+}
+
+function openRRHH(){
+  $sv('rrId','');$sv('rrNom','');$sv('rrPin','');
+  ['rp1','rp2','rp3','rp4','rp5','rp6'].forEach(function(id){$e(id).checked=false});
+  $e('rp1').checked=true;$e('rp3').checked=true;$e('rp5').checked=true;$e('rp6').checked=true;
+  $e('mRRHHTit').textContent='Nuevo Usuario RRHH';
+  OM('mRRHH');
+}
+
+function editRRHH(u){
+  $sv('rrId',u.id);$sv('rrNom',u.nombre);$sv('rrPin',u.pin);
+  $e('rp1').checked=!!u.perm_importar_pdf;$e('rp2').checked=!!u.perm_descuentos;
+  $e('rp3').checked=!!u.perm_reportes;$e('rp4').checked=!!u.perm_cerrar_periodo;
+  $e('rp5').checked=!!u.perm_editar_asistencias;$e('rp6').checked=!!u.perm_editar_nomina;
+  $e('mRRHHTit').textContent='Editar Usuario RRHH';
+  OM('mRRHH');
+}
+
+function saveRRHH(){
+  var nom=$v('rrNom').trim();var pin=$v('rrPin');
+  if(!nom||!pin){toast('Nombre y PIN requeridos','error');return}
+  if(pin.length!==4){toast('PIN debe ser 4 dígitos','error');return}
+  var data={nombre:nom,pin:pin,activo:true,
+    perm_importar_pdf:$e('rp1').checked,perm_descuentos:$e('rp2').checked,
+    perm_reportes:$e('rp3').checked,perm_cerrar_periodo:$e('rp4').checked,
+    perm_editar_asistencias:$e('rp5').checked,perm_editar_nomina:$e('rp6').checked};
+  var id=$v('rrId');
+  var op=id?sb.from('nom_rrhh_usuarios').update(data).eq('id',id):sb.from('nom_rrhh_usuarios').insert(data);
+  op.then(function(r){
+    if(r.error){toast('Error: '+r.error.message,'error');return}
+    logH('nom_rrhh_usuarios',id?'UPDATE':'INSERT',id||'new',null,{nombre:nom});
+    toast('Usuario guardado','success');CM('mRRHH');loadConfig();
+  });
+}
+
+function delRRHH(id,nom){
+  if(!confirm('¿Eliminar usuario '+nom+'?'))return;
+  sb.from('nom_rrhh_usuarios').update({activo:false}).eq('id',id).then(function(r){
+    if(r.error){toast('Error','error');return}
+    toast('Usuario eliminado','success');loadConfig();
+  });
+}
+
+// ══════════════════════════════════════════════
+// CLOSE MODALS ON OVERLAY CLICK
+// ══════════════════════════════════════════════
+document.querySelectorAll('.mOv').forEach(function(el){
+  el.addEventListener('click',function(e){if(e.target===el)el.classList.remove('on')});
+});
+
+// Drag and drop PDF
+var dropZone=$e('pdfDrop');
+if(dropZone){
+  dropZone.addEventListener('dragover',function(e){e.preventDefault();dropZone.style.borderColor='var(--accent)'});
+  dropZone.addEventListener('dragleave',function(){dropZone.style.borderColor='var(--border)'});
+  dropZone.addEventListener('drop',function(e){
+    e.preventDefault();dropZone.style.borderColor='var(--border)';
+    var files=e.dataTransfer.files;
+    if(files[0]&&files[0].type==='application/pdf'){
+      $e('pdfFile').files=files;handlePDF($e('pdfFile'));
+    }
+  });
+}
+</script>
+</body>
+</html>
