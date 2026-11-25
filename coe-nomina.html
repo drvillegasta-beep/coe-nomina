@@ -312,6 +312,44 @@ textarea{resize:vertical;min-height:72px;}
 .uavt{width:36px;height:36px;border-radius:50%;background:var(--sf3);
   display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;}
 
+/* ── Login: usuarios fijos ── */
+#loginScreen{background:radial-gradient(900px 500px at 50% -10%,rgba(0,201,167,.14),transparent 60%),radial-gradient(700px 400px at 90% 110%,rgba(88,166,255,.10),transparent 60%),var(--bg);}
+.lgbox{width:100%;max-width:460px;}
+.lghead{display:flex;flex-direction:column;align-items:center;gap:10px;margin-bottom:26px;}
+.lghead .lgn-logo{height:64px;}
+.lghead h1{font-size:26px;font-weight:800;letter-spacing:-.3px;}
+.lghead p{font-size:13px;color:var(--tm);}
+.ucards{display:grid;gap:10px;}
+.ucard{display:grid;grid-template-columns:52px 1fr auto;align-items:center;gap:14px;padding:14px 16px;background:var(--sf);
+  border:1px solid var(--br);border-radius:14px;cursor:pointer;transition:border-color .2s,background .2s,transform .15s;text-align:left;font-family:var(--fn);color:var(--tx);width:100%;}
+.ucard:hover{border-color:var(--br2);transform:translateY(-1px);}
+.ucard:focus-visible{outline:2px solid var(--pr);outline-offset:2px;}
+.ucard .av{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:19px;color:#071311;background:var(--c);box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--c);}
+.ucard .nm{font-weight:700;font-size:15px;}
+.ucard .rl{font-size:12px;color:var(--tm);margin-top:2px;}
+.ucard .lv{font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;background:var(--cd);color:var(--c);}
+.ucard.sel{border-color:var(--c);background:linear-gradient(0deg,var(--cd),var(--cd)),var(--sf);}
+.lgpass{overflow:hidden;max-height:0;opacity:0;transition:max-height .3s ease,opacity .25s ease,margin .3s ease;}
+.lgpass.on{max-height:150px;opacity:1;margin-top:16px;}
+.lgpass .row{display:flex;gap:8px;}
+.lgpass input{flex:1;background:var(--sf2);border:1px solid var(--br);border-radius:10px;color:var(--tx);padding:13px 14px;font-size:15px;font-family:var(--fn);}
+.lgpass input:focus{outline:none;border-color:var(--pr);}
+.lgpass .btn{padding:0 22px;}
+.lgmore{margin-top:14px;text-align:center;font-size:12px;color:var(--td);}
+.lgmore a{color:var(--tm);cursor:pointer;text-decoration:underline;}
+.lgother{display:none;margin-top:12px;}
+.lgother.on{display:block;}
+.lgother input{width:100%;background:var(--sf2);border:1px solid var(--br);border-radius:10px;color:var(--tx);padding:11px 14px;font-size:14px;font-family:var(--fn);}
+@media(prefers-reduced-motion:reduce){.ucard,.lgpass{transition:none;}}
+/* ── Vista previa ── */
+#pvBar{display:none;position:fixed;left:0;right:0;bottom:0;z-index:9998;background:#2b2108;border-top:2px solid var(--wn);color:#f3deaa;padding:10px 16px;align-items:center;justify-content:space-between;gap:12px;font-size:13px;}
+#pvBar b{color:#fff;}
+.pvmenu{position:absolute;top:calc(var(--th) - 6px);right:12px;background:var(--sf);border:1px solid var(--br);border-radius:10px;padding:6px;z-index:9997;display:none;min-width:240px;box-shadow:0 12px 32px rgba(0,0,0,.5);}
+.pvmenu.on{display:block;}
+.pvmenu button{display:block;width:100%;text-align:left;background:none;border:0;color:var(--tx);padding:10px 12px;border-radius:7px;cursor:pointer;font-family:var(--fn);font-size:13px;}
+.pvmenu button:hover{background:var(--sf2);}
+.pvmenu small{display:block;color:var(--tm);font-size:11px;margin-top:2px;}
+
 /* ── Cotizaciones de proveedor ── */
 .bdg-bor{background:var(--sf3);color:var(--tm);}
 .bdg-pen{background:var(--wd);color:var(--wn);}
@@ -609,18 +647,26 @@ tr.clk{cursor:pointer;}
 <div class="sb-overlay" id="sbOv" onclick="closeSb()"></div>
 
 <div class="ctr" id="loginScreen" style="display:none;">
-  <div class="card">
-    <img src="" data-logo class="lgn-logo" alt="Centro Ocular Especializado">
-    <div class="ltit">Nómina</div>
-    <div class="lsub">Centro Ocular Especializado · mismo usuario y contraseña de COE Finanzas</div>
-    <div class="fld"><label>Usuario</label><input type="text" id="lgU" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
-    <div class="fld"><label>Contraseña</label><input type="password" id="lgP" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
-    <button class="btn btn-p" style="width:100%;justify-content:center;padding:12px" onclick="doLogin()">Entrar</button>
-    <div class="mini" style="text-align:center;margin-top:12px">El acceso a Nómina lo otorga Dirección General.</div>
+  <div class="lgbox">
+    <div class="lghead">
+      <img src="" data-logo class="lgn-logo" alt="Centro Ocular Especializado">
+      <h1>Nómina</h1>
+      <p>Elige tu usuario y escribe tu contraseña</p>
+    </div>
+    <div class="ucards" id="ucards"></div>
+    <div class="lgpass" id="lgpass">
+      <div class="row">
+        <input type="password" id="lgP" placeholder="Contraseña" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+        <button class="btn btn-p" onclick="doLogin()">Entrar</button>
+      </div>
+    </div>
+    <div class="lgother" id="lgother"><input type="text" id="lgU" placeholder="Usuario de COE Finanzas" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" onfocus="lgSel(-1)"></div>
     <div class="perr" id="lgErr"></div>
+    <div class="lgmore">¿Otro usuario? <a onclick="lgOtro()">Escribir usuario</a> · El acceso lo otorga Dirección General.</div>
   </div>
 </div>
 
+<div id="pvBar"></div>
 <div id="app" style="display:none;">
   <div class="topbar">
     <button class="hmb" onclick="togSb()">☰</button>
@@ -631,6 +677,11 @@ tr.clk{cursor:pointer;}
     <span class="tsp"></span>
     <a class="tbtn" id="lnkFin" href="https://drvillegasta-beep.github.io/coe-finanzas.html/coe-finanzas-v3.html" target="_blank" rel="noopener" title="Abrir COE Finanzas">Finanzas ↗</a>
     <button class="tbtn" onclick="recargar(true)" title="Actualizar">↻</button>
+    <button class="tbtn" id="pvBtn" style="display:none" onclick="pvMenu(event)" title="Ver el sistema como lo ve otro usuario">👁 Ver como</button>
+    <div class="pvmenu" id="pvMenu">
+      <button onclick="pvEntrar(2,'Contadora')">Contadora<small>Captura: importa checador, incidencias, calcula y revisa</small></button>
+      <button onclick="pvEntrar(1,'Solo consulta')">Solo consulta<small>Ve asistencia, nóminas y reportes</small></button>
+    </div>
     <div class="tusr">
       <div class="tav" id="tav">A</div>
       <span id="tnom">Usuario</span>
@@ -1315,7 +1366,8 @@ let sb = null, ses = null, tab = 'ini';
 let DB = { empleados: [], mapeo: [], checadas: [], incidencias: [], movimientos: [], nominas: [], recibos: [], egresos: [], descuentos: [], descuento_pagos: [], importaciones: [], usuarios: [], config: {}, historial_v1: [] };
 let RANGO = null;
 const VIEW = { per: null, nomId: null, empBajas: false, repDesde: null, repHasta: null, soloPend: false, calc: null };
-const nivel = () => ses?.nivel || 0;
+let PREV = null, SB_REAL = null;
+const nivel = () => PREV ? PREV.n : (ses?.nivel || 0);
 const puedeCap = () => nivel() >= 2;
 const esDir = () => nivel() >= 3;
 const REG = () => ({ ...NOM.DEF_REGLAS, ...(DB.config.reglas || {}) });
@@ -1438,6 +1490,35 @@ async function subirArchivo(file, carpeta) {
 }
 
 // ══ ACCESO ══════════════════════════════════════
+const LG_FIJOS = [
+  { u: 'antonio', n: 'Antonio', r: 'Director Médico', lv: 'Dirección', c: 'var(--pr)', cd: 'var(--pd)' },
+  { u: 'dra.rivera', n: 'Dra. Rivera', r: 'Médica oftalmóloga', lv: 'Dirección', c: 'var(--pr)', cd: 'var(--pd)' },
+  { u: 'contabilidad.tacambro', n: 'Contabilidad Tacámbaro', r: 'Contadora', lv: 'Captura', c: 'var(--in)', cd: 'var(--id)' }
+];
+function lgRender() {
+  const box = document.getElementById('ucards'); if (!box) return;
+  box.innerHTML = LG_FIJOS.map((x, i) => `<button type="button" class="ucard" id="uc${i}" style="--c:${x.c};--cd:${x.cd}" onclick="lgSel(${i})"><span class="av">${x.n[0]}</span><span><div class="nm">${x.n}</div><div class="rl">${x.r}</div></span><span class="lv">${x.lv}</span></button>`).join('');
+  let ult = ''; try { ult = localStorage.getItem('coe_nom_ult') || ''; } catch { }
+  const k = LG_FIJOS.findIndex(x => x.u === ult);
+  if (k >= 0) lgSel(k, true);
+}
+function lgSel(i, sinFoco) {
+  document.querySelectorAll('.ucard').forEach((el, k) => el.classList.toggle('sel', k === i));
+  if (i >= 0) {
+    document.getElementById('lgU').value = LG_FIJOS[i].u;
+    document.getElementById('lgother').classList.remove('on');
+  }
+  document.getElementById('lgpass').classList.add('on');
+  document.getElementById('lgErr').textContent = '';
+  if (!sinFoco) setTimeout(() => document.getElementById('lgP').focus(), 200);
+}
+function lgOtro() {
+  document.querySelectorAll('.ucard').forEach(el => el.classList.remove('sel'));
+  document.getElementById('lgU').value = '';
+  document.getElementById('lgother').classList.add('on');
+  document.getElementById('lgpass').classList.add('on');
+  document.getElementById('lgU').focus();
+}
 async function doLogin() {
   const u = val('lgU').trim(), p = val('lgP'), err = document.getElementById('lgErr');
   if (!u || !p) { err.textContent = 'Escribe usuario y contraseña'; return; }
@@ -1446,6 +1527,7 @@ async function doLogin() {
   if (error) { err.textContent = /nom_login/.test(error.message) ? 'Falta correr el SQL de Nómina 2.0 en Supabase' : 'Sin conexión, intenta de nuevo'; return; }
   if (!data?.ok) { err.textContent = errTxt(data?.error); return; }
   err.textContent = '';
+  try { localStorage.setItem('coe_nom_ult', u); } catch { }
   ses = { token: data.token, id: data.id, nombre: data.nombre, rol: data.rol, usuario: data.usuario, nivel: data.nivel };
   try { localStorage.setItem(SES_KEY, JSON.stringify(ses)); } catch { }
   entrarApp();
@@ -1466,12 +1548,43 @@ async function sesionVencida() {
 // ══ ARRANQUE ════════════════════════════════════
 async function boot() {
   document.querySelectorAll('img[data-logo]').forEach(i => i.src = LOGO);
+  lgRender();
   document.getElementById('favi').href = LOGO;
   try { sb = window.supabase.createClient(SB_URL, SB_KEY); }
   catch { document.getElementById('loadMsg').textContent = 'Sin conexión. Reintentando…'; setTimeout(boot, 5000); return; }
   document.getElementById('loadOv').style.display = 'none';
   try { ses = JSON.parse(localStorage.getItem(SES_KEY) || 'null'); } catch { ses = null; }
   if (ses?.token) entrarApp(); else document.getElementById('loginScreen').style.display = 'flex';
+}
+function aplicarNivel() {
+  document.body.classList.toggle('ro', !puedeCap());
+  document.body.classList.toggle('no-dir', !esDir());
+}
+const PV_LECTURA = ['nom_datos', 'nom_bitacora'];
+function pvMenu(ev) { ev && ev.stopPropagation(); document.getElementById('pvMenu').classList.toggle('on'); }
+document.addEventListener('click', () => { const m = document.getElementById('pvMenu'); if (m) m.classList.remove('on'); });
+function pvEntrar(n, etiqueta) {
+  if (PREV || !esDir()) return;
+  document.getElementById('pvMenu').classList.remove('on');
+  SB_REAL = sb;
+  sb = new Proxy(SB_REAL, { get(t, k) {
+    if (k === 'rpc') return (fn, a) => PV_LECTURA.includes(fn) ? t.rpc(fn, a) : Promise.resolve({ data: null, error: { message: 'Vista previa: solo lectura, no se guarda nada' } });
+    if (k === 'storage') return { from: () => ({ upload: async () => ({ error: { message: 'Vista previa: solo lectura' } }), getPublicUrl: () => ({ data: { publicUrl: '' } }) }) };
+    const v = t[k]; return typeof v === 'function' ? v.bind(t) : v;
+  } });
+  PREV = { n, etiqueta };
+  const bar = document.getElementById('pvBar');
+  bar.innerHTML = `<div><b>Vista previa: ${etiqueta}</b> · solo lectura, nada se guarda. Así ve el sistema esa persona.</div><button class="btn btn-s btn-sm" onclick="pvSalir()">Salir de la vista</button>`;
+  bar.style.display = 'flex';
+  document.getElementById('tnom').textContent = etiqueta + ' (vista)';
+  aplicarNivel(); goTab('ini'); render();
+}
+function pvSalir() {
+  if (!PREV) return;
+  sb = SB_REAL; SB_REAL = null; PREV = null;
+  document.getElementById('pvBar').style.display = 'none';
+  document.getElementById('tnom').textContent = ses.nombre + ' · ' + ['Sin acceso', 'Consulta', 'Captura', 'Dirección'][nivel()];
+  aplicarNivel(); render();
 }
 async function entrarApp() {
   const q = NOM.quincena(hoy());
@@ -1482,8 +1595,8 @@ async function entrarApp() {
   document.getElementById('app').style.display = 'block';
   document.getElementById('tnom').textContent = ses.nombre + ' · ' + ['Sin acceso', 'Consulta', 'Captura', 'Dirección'][nivel()];
   document.getElementById('tav').textContent = (ses.nombre || '?')[0].toUpperCase();
-  document.body.classList.toggle('ro', !puedeCap());
-  document.body.classList.toggle('no-dir', !esDir());
+  aplicarNivel();
+  const pb = document.getElementById('pvBtn'); if (pb) pb.style.display = (ses.nivel >= 3 && !PREV) ? '' : 'none';
   goTab(location.hash.slice(1) || 'ini');
   if (!window._nomTick) window._nomTick = setInterval(() => { if (ses && document.visibilityState === 'visible' && document.getElementById('mGen').style.display !== 'flex') recargar(false); }, 120000);
 }
