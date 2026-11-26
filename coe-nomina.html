@@ -1455,7 +1455,7 @@ async function firmar(fn, args, opts = {}) {
   let pin = opts.pin, pin2 = null;
   if (!pin) { try { pin = await askPin(opts.titulo || 'Firma con PIN', opts.sub || ''); } catch { return null; } }
   const conP2 = opts.doble !== undefined;
-  if (opts.doble === true && ses.rol !== 'admin') {
+  if (opts.doble === true && ses.rol !== 'admin' && false) { // la 2ª firma solo se pide si el servidor la exige (contadora)
     try { pin2 = await askPin('Segunda firma', (opts.sub2 || 'Información sensible') + ' · ' + quienSegunda()); } catch { return null; }
   }
   for (let i = 0; i < 3; i++) {
