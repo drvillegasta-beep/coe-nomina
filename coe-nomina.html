@@ -662,7 +662,7 @@ tr.clk{cursor:pointer;}
     </div>
     <div class="lgother" id="lgother"><input type="text" id="lgU" placeholder="Usuario de COE Finanzas" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" onfocus="lgSel(-1)"></div>
     <div class="perr" id="lgErr"></div>
-    <div class="lgmore">¿Otro usuario? <a onclick="lgOtro()">Escribir usuario</a> · El acceso lo otorga Dirección General.<br><span style="font-size:11px">Versión 25-nov-2026 · sin segunda firma para Dirección</span></div>
+    <div class="lgmore">¿Otro usuario? <a onclick="lgOtro()">Escribir usuario</a> · El acceso lo otorga Dirección General.<br><span style="font-size:11px">Versión 26-nov-2026 · sin doble PIN para Dirección</span></div>
   </div>
 </div>
 
@@ -1446,6 +1446,7 @@ const ERR = {
   credenciales: 'Usuario o contraseña incorrectos', horas: 'Indica las horas', fecha_cambio: 'Indica el día que repone'
 };
 const errTxt = e => ERR[e] || ('No se pudo: ' + e);
+const dpin = () => ses?.rol === 'admin' ? 'tu PIN' : 'doble PIN';
 const quienSegunda = () => ses.rol === 'admin' ? 'PIN de la Contadora (u otro usuario con nivel de captura)' : 'PIN del Director General';
 
 /* Llama una función firmada.
@@ -1894,7 +1895,7 @@ async function agregarChecada(eid, fecha) {
   toast('Checada agregada', 'success'); await recargar(); verDia(eid, fecha);
 }
 async function anularChecada(id, eid, fecha) {
-  const m = await pedir('Motivo para anular esta checada. Es información sensible: requiere doble PIN.', 'Anular checada');
+  const m = await pedir('Motivo para anular esta checada. Es información sensible: requiere ' + dpin() + '.', 'Anular checada');
   if (!m || !m.trim()) return;
   const r = await firmar('nom_checada_anular', { p_id: id, p_motivo: m.trim() }, { titulo: 'Anular checada', doble: true, sub2: 'Anular checada' });
   if (!r) return;
@@ -1924,7 +1925,7 @@ async function guardarIncidencia(eids, fecha, pref = 'di') {
   if (pref === 'di' && eids.length === 1) verDia(eids[0], fecha); else CM('mGen');
 }
 async function anularIncidencia(id, eid, fecha) {
-  const m = await pedir('Motivo para anular la incidencia. Requiere doble PIN.', 'Anular incidencia');
+  const m = await pedir('Motivo para anular la incidencia. Requiere ' + dpin() + '.', 'Anular incidencia');
   if (!m || !m.trim()) return;
   const r = await firmar('nom_incidencia_anular', { p_id: id, p_motivo: m.trim() }, { titulo: 'Anular incidencia', doble: true, sub2: 'Anular incidencia' });
   if (!r) return;
@@ -2200,7 +2201,7 @@ async function vNominaDetalle() {
   if (['calculada', 'observada'].includes(n.estado) && puedeCap() && !mostrandoCalc) acciones.push(`<button class="btn btn-p" onclick="revisarNomina('revisada')">✓ Marcar revisada</button><button class="btn btn-w" onclick="revisarNomina('observada')">Observar</button>`);
   if (n.estado === 'revisada' && esDir() && !mostrandoCalc) acciones.push(`<button class="btn btn-p" onclick="autorizarNomina()">Autorizar y enviar a Finanzas</button>`);
   if (n.estado === 'revisada' && puedeCap() && !mostrandoCalc) acciones.push(`<button class="btn btn-w" onclick="revisarNomina('observada')">Observar</button>`);
-  if (n.estado === 'autorizada' && puedeCap()) acciones.push(`<button class="btn btn-d" onclick="reabrirNomina()">Reabrir (doble PIN)</button>`);
+  if (n.estado === 'autorizada' && puedeCap()) acciones.push(`<button class="btn btn-d" onclick="reabrirNomina()">Reabrir (${dpin()})</button>`);
   if (!['autorizada', 'cancelada'].includes(n.estado) && puedeCap()) acciones.push(`<button class="btn btn-d btn-sm" onclick="cancelarNomina()">Cancelar nómina</button>`);
   setMain(`
   <div class="ph" style="padding:0 0 14px;border:none"><div><div class="ptit"><span class="lk" style="text-decoration:none" onclick="VIEW.nomId=null;render()">Nóminas</span> › ${esc(n.folio)} · ${TIPO_NOM[n.tipo]}</div>
@@ -2291,7 +2292,7 @@ async function autorizarNomina() {
 }
 async function reabrirNomina() {
   const n = DB.nominas.find(x => x.id === VIEW.nomId);
-  const m = await pedir('Motivo para reabrir. Se anulan sus egresos en Finanzas si no tienen pagos. Requiere doble PIN.', 'Reabrir nómina');
+  const m = await pedir('Motivo para reabrir. Se anulan sus egresos en Finanzas si no tienen pagos. Requiere ' + dpin() + '.', 'Reabrir nómina');
   if (!m || !m.trim()) return;
   const r = await firmar('nom_nomina_reabrir', { p_nomina: n.id, p_motivo: m.trim() }, { titulo: 'Reabrir nómina', doble: true, sub2: 'Reabrir ' + n.folio });
   if (!r) return;
@@ -2299,7 +2300,7 @@ async function reabrirNomina() {
 }
 async function cancelarNomina() {
   const n = DB.nominas.find(x => x.id === VIEW.nomId);
-  const m = await pedir('Motivo de cancelación. Requiere doble PIN.', 'Cancelar nómina');
+  const m = await pedir('Motivo de cancelación. Requiere ' + dpin() + '.', 'Cancelar nómina');
   if (!m || !m.trim()) return;
   const r = await firmar('nom_nomina_cancelar', { p_nomina: n.id, p_motivo: m.trim() }, { titulo: 'Cancelar nómina', doble: true, sub2: 'Cancelar ' + n.folio });
   if (!r) return;
@@ -2552,7 +2553,7 @@ function vFicha() {
   const recs = id ? DB.recibos.filter(r => r.empleado_id === id).map(r => ({ r, n: DB.nominas.find(n => n.id === r.nomina_id) })).filter(x => x.n && x.n.estado !== 'cancelada').sort((a, b) => b.n.fecha_ini.localeCompare(a.n.fecha_ini)) : [];
   setMain(`
   <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit"><span class="lk" style="text-decoration:none" onclick="VIEW.empId=null;render()">Empleados</span> › ${esc(id ? e.nombre : 'Nuevo empleado')}</div>
-    <div class="psub">${id ? MOD_BDG(m) + (e.activo ? '' : ` <span class="bdg bdg-can">Baja ${fmtD(e.fecha_baja)}</span>`) : 'Captura la ficha y guarda con PIN'} ${id ? ' · los campos con 🔒 requieren doble PIN' : ''}</div></div>
+    <div class="psub">${id ? MOD_BDG(m) + (e.activo ? '' : ` <span class="bdg bdg-can">Baja ${fmtD(e.fecha_baja)}</span>`) : 'Captura la ficha y guarda con PIN'} ${id ? ' · los campos con 🔒 requieren ${dpin()}' : ''}</div></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">${puedeCap() ? `${id && e.activo ? `<button class="btn btn-s btn-sm" onclick="nuevoPrestamo('${id}')">+ Préstamo</button><button class="btn btn-s btn-sm" onclick="nuevoMovimiento('${id}','percepcion','','comision')">+ Comisión / bono</button><button class="btn btn-d btn-sm" onclick="bajaEmpleado('${id}')">Dar de baja</button>` : ''}${id && !e.activo ? `<button class="btn btn-s btn-sm" onclick="reactivarEmpleado('${id}')">Reactivar</button>` : ''}<button class="btn btn-p" onclick="guardarEmpleado('${id || ''}')">Guardar con PIN</button>` : ''}</div></div>
   <div class="cfgg">
     <div class="cfg-section"><h3>Datos personales</h3><div class="body"><div class="fgrd">
@@ -2655,7 +2656,7 @@ function bajaEmpleado(id) {
     <div class="fgrd"><div class="fgrp"><label>Fecha de baja (último día laborado)</label><input type="date" id="bjF" value="${hoy()}"></div>
       <div class="fgrp"><label>Motivo</label><select id="bjM"><option value="renuncia">Renuncia voluntaria</option><option value="despido">Despido justificado</option><option value="despido_injustificado">Despido injustificado</option><option value="termino">Término de contrato</option></select></div>
       <div class="fgrp sp2"><label>Detalle</label><input type="text" id="bjN"></div></div>
-    <div class="mini" style="margin-top:10px">La baja es información sensible (doble PIN). Después podrás generar el finiquito en Prestaciones.</div>`,
+    <div class="mini" style="margin-top:10px">La baja es información sensible (${dpin()}). Después podrás generar el finiquito en Prestaciones.</div>`,
     `<button class="btn btn-s" onclick="CM('mGen')">Cancelar</button><button class="btn btn-d" onclick="confirmarBaja('${id}')">Dar de baja</button>`, 'sm');
 }
 async function confirmarBaja(id) {
@@ -2785,7 +2786,7 @@ async function guardarComisiones() {
   CM('mGen'); toast(`${ok} comisión(es) registradas`, ok === L.length ? 'success' : 'warning'); await recargar();
 }
 async function anularMovimiento(id) {
-  const m = await pedir('Motivo para anular. Requiere doble PIN.', 'Anular movimiento'); if (!m || !m.trim()) return;
+  const m = await pedir('Motivo para anular. Requiere ' + dpin() + '.', 'Anular movimiento'); if (!m || !m.trim()) return;
   const r = await firmar('nom_movimiento_anular', { p_id: id, p_motivo: m.trim() }, { titulo: 'Anular movimiento', doble: true, sub2: 'Anular bono/descuento' });
   if (r) { toast('Anulado', 'success'); await recargar(); }
 }
@@ -2823,7 +2824,7 @@ async function pausarPrestamo(id, pausar) {
   if (r) { toast(pausar ? 'Pausado' : 'Reanudado', 'success'); await recargar(); }
 }
 async function anularPrestamo(id) {
-  const m = await pedir('Motivo para cancelar las parcialidades pendientes. Requiere doble PIN.', 'Cancelar préstamo'); if (!m || !m.trim()) return;
+  const m = await pedir('Motivo para cancelar las parcialidades pendientes. Requiere ' + dpin() + '.', 'Cancelar préstamo'); if (!m || !m.trim()) return;
   const r = await firmar('nom_descuento_anular', { p_id: id, p_motivo: m.trim() }, { titulo: 'Cancelar parcialidades', doble: true, sub2: 'Cancelar préstamo' });
   if (r) { toast('Cancelado', 'success'); await recargar(); }
 }
@@ -3001,7 +3002,7 @@ function vConfig() {
   const n = (k, l, h = '') => `<div class="fgrp"><label>${l}</label><input type="number" id="rg_${k}" value="${R[k]}" step="any" ${ro}>${h ? `<span class="fhint">${h}</span>` : ''}</div>`;
   const b = (k, l) => `<label><input type="checkbox" id="rg_${k}" ${R[k] ? 'checked' : ''} ${ro}> ${l}</label>`;
   setMain(`
-  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Configuración</div><div class="psub">Cambiar reglas de cálculo es información sensible: requiere doble PIN.</div></div></div>
+  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Configuración</div><div class="psub">Cambiar reglas de cálculo es información sensible: requiere ${dpin()}.</div></div></div>
   <div class="cfgg">
     <div class="cfg-section"><h3>Reglas de asistencia y pago</h3><div class="body">
       <div class="fgrd">${n('tolerancia_min', 'Tolerancia de entrada (min)')}${n('comida_tol_min', 'Tolerancia de comida (min)')}
@@ -3014,7 +3015,7 @@ function vConfig() {
       <div class="chkrow" style="margin-top:12px">${b('falta_quita_asistencia', 'Una falta quita bono de asistencia')}${b('incompleta_quita_puntualidad', 'Checada incompleta quita bono de puntualidad')}${b('descontar_septimo', 'Descontar parte proporcional del séptimo día por falta')}${b('pagar_prima_al_gozar', 'Pagar prima vacacional al gozar las vacaciones')}${b('retroactivo_contrato', 'Contratos: aplicar incidencias en la quincena siguiente (pago retroactivo)')}</div>
       <div class="okbox" style="margin-top:12px">Al autorizar: contratos = un egreso de dispersión de nómina; honorarios = un egreso por persona con factura pendiente.</div>
       <div class="fgrp" style="margin-top:12px"><label>Días festivos adicionales (uno por renglón: aaaa-mm-dd nombre)</label><textarea id="rg_fx" ${ro}>${(R.festivos_extra || []).map(x => (x.fecha || x) + ' ' + (x.nombre || '')).join('\n')}</textarea></div>
-      <button class="btn btn-p btn-sm solo-cap" style="margin-top:12px" onclick="guardarReglas()">Guardar reglas (doble PIN)</button></div></div>
+      <button class="btn btn-p btn-sm solo-cap" style="margin-top:12px" onclick="guardarReglas()">Guardar reglas (${dpin()})</button></div></div>
     <div class="cfg-section"><h3>Valores fiscales ${esc(F.anio || '')}</h3><div class="body">
       <div class="fgrd"><div class="fgrp"><label>UMA diaria</label><input type="number" id="fi_uma_diaria" value="${F.uma_diaria}" step="any" ${ro}></div><div class="fgrp"><label>UMA mensual</label><input type="number" id="fi_uma_mensual" value="${F.uma_mensual}" step="any" ${ro}></div>
         <div class="fgrp"><label>Salario mínimo diario</label><input type="number" id="fi_salario_minimo" value="${F.salario_minimo}" step="any" ${ro}></div><div class="fgrp"><label>Año</label><input type="number" id="fi_anio" value="${F.anio}" ${ro}></div>
@@ -3022,13 +3023,13 @@ function vConfig() {
       <div class="fgrp" style="margin-top:10px"><label>Tarifa ISR quincenal (límite inferior, cuota fija, % excedente)</label><textarea id="fi_isr_quincenal" style="font-family:var(--mo);font-size:11px;min-height:110px" ${ro}>${(F.isr_quincenal || []).map(r => r.join(', ')).join('\n')}</textarea></div>
       <div class="fgrp" style="margin-top:10px"><label>Tarifa ISR mensual</label><textarea id="fi_isr_mensual" style="font-family:var(--mo);font-size:11px;min-height:110px" ${ro}>${(F.isr_mensual || []).map(r => r.join(', ')).join('\n')}</textarea></div>
       <div class="mini" style="margin-top:6px">Precargado: Anexo 8 RMF 2026 (DOF 28/12/2025), UMA 2026 (INEGI) y salario mínimo 2026. La Contadora valida los cálculos fiscales.</div>
-      <button class="btn btn-p btn-sm solo-cap" style="margin-top:12px" onclick="guardarFiscal()">Guardar valores fiscales (doble PIN)</button></div></div>
+      <button class="btn btn-p btn-sm solo-cap" style="margin-top:12px" onclick="guardarFiscal()">Guardar valores fiscales (${dpin()})</button></div></div>
     <div class="cfg-section"><h3>Días de descanso obligatorio</h3><div class="body"><table><tbody>${Object.entries(fest).sort().map(([f, nm]) => `<tr><td>${fmtD(f)}</td><td>${DIAL[NOM.D(f).getDay()]}</td><td>${esc(nm)}</td></tr>`).join('')}</tbody></table>
       <div class="mini" style="margin-top:8px">Art. 74 LFT. Se pagan sin trabajar; si se trabajan y se autoriza, se paga doble adicional.</div></div></div>
     <div class="cfg-section"><h3>Permisos de Nómina</h3><div class="body">
       <div class="mini" style="margin-bottom:10px"><span class="lvl l1">1 Consulta</span> ve asistencia, nóminas y reportes · <span class="lvl l2">2 Captura</span> importa checador, incidencias, bonos, calcula y revisa (Contadora) · <span class="lvl l3">3 Dirección</span> autoriza y envía a Finanzas. Sin nivel = sin acceso. Mismo usuario y contraseña que COE Finanzas.</div>
       <table><tbody>${DB.usuarios.map(u => `<tr><td>${esc(u.nombre)}<div class="mini">${esc(u.usuario || '')} · ${esc(u.rol)}</div></td><td style="width:170px">${esDir() && ses.rol === 'admin' && u.id !== ses.id ? `<select class="fsel" onchange="guardarNivel('${u.id}',this.value)">${[0, 1, 2, 3].map(l => `<option value="${l}" ${u.nivel === l ? 'selected' : ''}>${['Sin acceso', '1 Consulta', '2 Captura', '3 Dirección'][l]}</option>`).join('')}</select>` : `<span class="lvl l${u.nivel}">${['Sin acceso', 'Consulta', 'Captura', 'Dirección'][u.nivel]}</span>`}</td></tr>`).join('')}</tbody></table>
-      <div class="mini" style="margin-top:10px">Doble PIN (quien opera + Director, o Director + Contadora): cambios de salario, bonos, banco/CLABE, RFC/NSS/CURP, fecha de ingreso, retenciones, altas y bajas; anular checadas, incidencias o bonos; cancelar parcialidades; reabrir o cancelar nóminas; reglas y valores fiscales.</div></div></div>
+      <div class="mini" style="margin-top:10px">${ses.rol === 'admin' ? 'Solo tu PIN (Dirección)' : 'Doble PIN (Contadora + Director)'}: cambios de salario, bonos, banco/CLABE, RFC/NSS/CURP, fecha de ingreso, retenciones, altas y bajas; anular checadas, incidencias o bonos; cancelar parcialidades; reabrir o cancelar nóminas; reglas y valores fiscales.</div></div></div>
   </div>`);
 }
 async function guardarReglas() {
