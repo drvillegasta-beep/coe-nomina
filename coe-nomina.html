@@ -698,6 +698,7 @@ tr.clk{cursor:pointer;}
     <div class="ni" id="n-nom" onclick="goTab('nom')">$ Nóminas<span class="nbdg" id="nb-nom" style="display:none"></span></div>
     <div class="ni" id="n-pag" onclick="goTab('pag')">✓ Pagos y facturas<span class="nbdg" id="nb-pag" style="display:none"></span></div>
     <div class="ni" id="n-rec" onclick="goTab('rec')">▤ Recibos</div>
+    <div class="ni" id="n-fir" onclick="goTab('fir')">✍ Recibos firmados<span class="nbdg" id="nb-fir" style="display:none"></span></div>
     <div class="ni" id="n-mov" onclick="goTab('mov')">± Bonos y descuentos</div>
     <div class="ni" id="n-pre" onclick="goTab('pre')">✦ Prestaciones</div>
     <div class="ns">Personal</div>
@@ -1443,7 +1444,7 @@ const ERR = {
   fechas: 'Revisa las fechas', no_revisada: 'La nómina debe estar revisada antes de autorizar', sin_recibos: 'La nómina no tiene recibos',
   con_pagos: 'Ya hay pagos registrados en Finanzas; anúlalos allá primero', solo_director: 'Solo el Director General', propio: 'No puedes cambiar tu propio nivel',
   nivel: 'Nivel no válido', tabla: 'Operación no permitida', provisional: 'Tu acceso es provisional: entra primero a COE Finanzas para crear tu contraseña y PIN',
-  credenciales: 'Usuario o contraseña incorrectos', horas: 'Indica las horas', fecha_cambio: 'Indica el día que repone'
+  credenciales: 'Usuario o contraseña incorrectos', archivo: 'Adjunta el archivo firmado', duplicado: 'Ese mismo archivo ya está registrado para esta persona y sección', categoria: 'Sección no válida', horas: 'Indica las horas', fecha_cambio: 'Indica el día que repone'
 };
 const errTxt = e => ERR[e] || ('No se pudo: ' + e);
 const dpin = () => ses?.rol === 'admin' ? 'tu PIN' : 'doble PIN';
@@ -1561,7 +1562,7 @@ function aplicarNivel() {
   document.body.classList.toggle('ro', !puedeCap());
   document.body.classList.toggle('no-dir', !esDir());
 }
-const PV_LECTURA = ['nom_datos', 'nom_bitacora'];
+const PV_LECTURA = ['nom_datos', 'nom_bitacora', 'nom_firmados_listar'];
 function pvMenu(ev) { ev && ev.stopPropagation(); document.getElementById('pvMenu').classList.toggle('on'); }
 document.addEventListener('click', () => { const m = document.getElementById('pvMenu'); if (m) m.classList.remove('on'); });
 function pvEntrar(n, etiqueta) {
@@ -1619,7 +1620,8 @@ async function cargar(primera, desde, hasta) {
     return false;
   }
   if (!data?.ok) { if (['sesion', 'sin_acceso'].includes(data?.error)) { if (primera) { try { localStorage.removeItem(SES_KEY); } catch { } document.getElementById('loginScreen').style.display = 'flex'; document.getElementById('lgErr').textContent = errTxt(data.error); return false; } sesionVencida(); } return false; }
-  DB = data;
+  DB = data; DB.firmados = DB.firmados || (typeof FIR !== 'undefined' ? FIR.lista : []);
+  cargarFirmados();
   ses.nivel = data.yo.nivel; ses.rol = data.yo.rol; ses.nombre = data.yo.nombre;
   RANGO = { desde, hasta };
   if (lb) { lb.className = 'live'; document.getElementById('liveTx').textContent = 'En línea · ' + new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }); }
@@ -1648,7 +1650,7 @@ function goTab(t) {
   render();
 }
 function render() {
-  const fn = { ini: vTablero, asi: vAsistencia, imp: vImportar, nom: vNominas, rec: vRecibos, pag: vPagos, mov: vMovimientos, pre: vPrestaciones, emp: vEmpleados, rep: vReportes, bit: vBitacora, cfg: vConfig }[tab];
+  const fn = { ini: vTablero, asi: vAsistencia, imp: vImportar, nom: vNominas, rec: vRecibos, fir: vFirmados, pag: vPagos, mov: vMovimientos, pre: vPrestaciones, emp: vEmpleados, rep: vReportes, bit: vBitacora, cfg: vConfig }[tab];
   try { fn(); } catch (e) { console.error(e); document.getElementById('mainContent').innerHTML = `<div class="errbox">Error al mostrar: ${esc(e.message)}</div>`; }
 }
 function setMain(h) { document.getElementById('mainContent').innerHTML = h; }
@@ -2516,6 +2518,120 @@ async function guardarPago(egId) {
   const r = await firmar('nom_registrar_pago', { p_egreso: egId, p_fecha: val('rpF'), p_referencia: val('rpR'), p_comprobante_url: up.url, p_sha256: up.sha }, { pin });
   if (!r) return;
   CM('mGen'); toast(r.factura ? `Pago comprobado. Factura solicitada en Finanzas (límite ${fmtD(r.limite)})` : 'Pago comprobado', 'success'); await recargar();
+}
+
+
+// ══ RECIBOS FIRMADOS ════════════════════════════
+const FIR = { ok: true, lista: [] };
+const FIR_CAT = {
+  nomina: ['Nómina', 'Recibos de nómina por contrato'],
+  honorarios: ['Honorarios', 'Recibos y comprobantes de pago por honorarios'],
+  descuento: ['Descuentos', 'Autorizaciones y recibos de descuentos'],
+  prestamo: ['Préstamos', 'Pagarés y autorizaciones de descuento por préstamo'],
+  eventualidad: ['Eventualidades', 'Aguinaldo, finiquito, pagos extraordinarios y otros']
+};
+async function cargarFirmados() {
+  if (!ses?.token || !sb) return;
+  const { data, error } = await sb.rpc('nom_firmados_listar', { p_token: ses.token });
+  if (error || !data?.ok) { FIR.ok = false; badgeFir(); return; }
+  FIR.ok = true; FIR.lista = data.data || []; DB.firmados = FIR.lista;
+  badgeFir();
+  if (tab === 'fir') render();
+}
+function firEsHon(r) { return (r.detalle?.modalidad || NOM.modalidad(emp(r.empleado_id) || {})) === 'honorarios'; }
+// Lo que falta por recabar en cada sección: [{ref, emp, nomina, ini, fin, concepto, monto}]
+function firPend(cat) {
+  const F = DB.firmados || [], tiene = ref => F.some(x => x.ref_id === ref);
+  const out = [];
+  const nomAut = DB.nominas.filter(n => n.estado === 'autorizada');
+  if (cat === 'nomina' || cat === 'honorarios' || cat === 'eventualidad') {
+    for (const n of nomAut) {
+      const extra = n.tipo !== 'ordinaria';
+      for (const r of DB.recibos.filter(r => r.nomina_id === n.id)) {
+        const hon = firEsHon(r);
+        const aqui = cat === 'eventualidad' ? extra : (!extra && (cat === 'honorarios') === hon);
+        if (aqui && !tiene(r.id)) out.push({ ref: r.id, emp: r.empleado_id, nomina: n.id, ini: n.fecha_ini, fin: n.fecha_fin, concepto: (extra ? TIPO_NOM[n.tipo] + ' · ' : '') + n.folio, monto: r.neto });
+      }
+    }
+  } else if (cat === 'descuento') {
+    for (const m of DB.movimientos) if (m.tipo !== 'percepcion' && !m.anulada && !tiene(m.id))
+      out.push({ ref: m.id, emp: m.empleado_id, nomina: m.nomina_id, ini: m.fecha, fin: m.fecha, concepto: m.concepto, monto: m.monto });
+  } else if (cat === 'prestamo') {
+    for (const d of DB.descuentos) if (!d.anulado && !tiene(d.id))
+      out.push({ ref: d.id, emp: d.empleado_id, ini: d.fecha_inicio, fin: null, concepto: d.descripcion || d.tipo || 'Préstamo', monto: d.monto_total });
+  }
+  return out.sort((a, b) => String(b.ini || '').localeCompare(String(a.ini || '')));
+}
+function badgeFir() {
+  if (!FIR.ok) return badge('nb-fir', '');
+  try { badge('nb-fir', firPend('nomina').length + firPend('honorarios').length || ''); } catch { }
+}
+function vFirmados() {
+  const cat = VIEW.firCat || 'nomina', fE = VIEW.firEmp || '';
+  if (!FIR.ok) return setMain(`<div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Recibos firmados</div></div></div><div class="warnbox">Falta crear las tablas de Recibos firmados en Supabase (sql/nom2_firmados.sql). Avisa a quien administra el sistema.</div>`);
+  const F = (DB.firmados || []).filter(x => x.categoria === cat && (!fE || x.empleado_id === fE)).sort((a, b) => String(b.fecha_fin || b.fecha_firma || b.created_at).localeCompare(String(a.fecha_fin || a.fecha_firma || a.created_at)));
+  const P = firPend(cat).filter(p => !fE || p.emp === fE);
+  const nF = c => (DB.firmados || []).filter(x => x.categoria === c).length, nP = c => firPend(c).length;
+  const emps = DB.empleados.slice().sort((a, b) => a.nombre.localeCompare(b.nombre));
+  const quien = id => DB.usuarios.find(u => u.id === id)?.nombre || '—';
+  setMain(`
+  <div class="ph" style="padding:0 0 16px;border:none"><div><div class="ptit">Recibos firmados</div><div class="psub">Aquí se guarda el recibo firmado por cada persona: de la quincena actual y de las anteriores. Sube la foto o el PDF firmado y queda ligado a su nómina.</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><select class="fsel" onchange="VIEW.firEmp=this.value;render()"><option value="">Todas las personas</option>${emps.map(e => `<option value="${e.id}" ${e.id === fE ? 'selected' : ''}>${esc(corto(e.nombre))}</option>`).join('')}</select>
+      <button class="btn btn-p solo-cap" onclick="firSubir('${cat}')">+ Subir recibo firmado</button></div></div>
+  <div class="chips" style="margin-bottom:14px">${Object.entries(FIR_CAT).map(([k, [t]]) => `<span class="chip ${cat === k ? 'act' : ''}" onclick="VIEW.firCat='${k}';render()">${t} · ${nF(k)} firmados${nP(k) ? ` · <b style="color:var(--wn)">${nP(k)} por recabar</b>` : ''}</span>`).join('')}</div>
+  <div class="mini" style="margin-bottom:12px">${FIR_CAT[cat][1]}.</div>
+  ${P.length ? `<div class="tc" style="margin-bottom:18px"><div class="ttb"><b>Por recabar (${P.length})</b><span class="mini">Aún no tienen su recibo firmado</span></div>
+    <table><thead><tr><th>Persona</th><th>Concepto</th><th>Periodo</th><th class="tr">Monto</th><th></th></tr></thead><tbody>
+    ${P.map((p, i) => `<tr><td>${esc(corto(nomEmp(p.emp)))}</td><td>${esc(p.concepto)}</td><td>${p.fin && p.fin !== p.ini ? perTxt(p.ini, p.fin) : fmtD(p.ini)}</td><td class="tr amt">${$$(p.monto)}</td>
+      <td><button class="btn btn-s btn-sm solo-cap" onclick="firSubir('${cat}',${i})">Subir firmado</button></td></tr>`).join('')}</tbody></table></div>` : ''}
+  <div class="tc"><div class="ttb"><b>Firmados (${F.length})</b></div>
+  ${F.length ? `<table><thead><tr><th>Persona</th><th>Concepto</th><th>Periodo / fecha</th><th class="tr">Monto</th><th>Subido</th><th></th></tr></thead><tbody>
+    ${F.map(x => `<tr><td>${esc(corto(nomEmp(x.empleado_id)))}</td><td>${esc(x.concepto || '—')}</td>
+      <td>${x.fecha_ini ? (x.fecha_fin && x.fecha_fin !== x.fecha_ini ? perTxt(x.fecha_ini, x.fecha_fin) : fmtD(x.fecha_ini)) : fmtD(x.fecha_firma)}${x.fecha_firma ? `<div class="mini">Firmó ${fmtD(x.fecha_firma)}</div>` : ''}</td>
+      <td class="tr amt">${x.monto != null ? $$(x.monto) : '—'}</td><td>${fmtDT(x.created_at)}<div class="mini">${esc(corto(quien(x.subido_por)))}</div></td>
+      <td><div class="rowact"><a class="btn btn-s btn-sm" href="${esc(x.url)}" target="_blank" rel="noopener">Ver archivo</a>${esDir() ? `<button class="btn btn-d btn-sm" onclick="firAnular('${x.id}')">Anular</button>` : ''}</div></td></tr>`).join('')}</tbody></table>`
+    : `<div class="emp"><div class="ic">✍</div>Todavía no hay recibos firmados en esta sección${P.length ? '. Sube el primero desde "Por recabar".' : '.'}</div>`}</div>
+  <div class="mini" style="margin-top:10px">Los archivos se guardan con huella SHA-256 para detectar duplicados. Anular un registro requiere el PIN de Dirección y queda en bitácora.</div>`);
+}
+let _firCtx = null;
+function firSubir(cat, idx) {
+  const p = idx !== undefined ? firPend(cat).filter(p => !(VIEW.firEmp) || p.emp === VIEW.firEmp)[idx] : null;
+  _firCtx = { cat, p };
+  const emps = DB.empleados.slice().sort((a, b) => a.nombre.localeCompare(b.nombre));
+  modal('Subir recibo firmado · ' + FIR_CAT[cat][0], `
+    <div class="fgrd">
+      <div class="fgrp sp2"><label>Persona</label>${p ? `<input type="text" value="${esc(nomEmp(p.emp))}" disabled>` : `<select id="frE"><option value="">Elige…</option>${emps.map(e => `<option value="${e.id}" ${e.id === VIEW.firEmp ? 'selected' : ''}>${esc(e.nombre)}${e.activo ? '' : ' (baja)'}</option>`).join('')}</select>`}</div>
+      <div class="fgrp sp2"><label>Concepto</label><input type="text" id="frC" value="${esc(p ? p.concepto : '')}" placeholder="${cat === 'nomina' || cat === 'honorarios' ? 'Ej. Quincena 1–15 oct 2026' : 'Describe qué firmó'}"></div>
+      <div class="fgrp"><label>Periodo: desde</label><input type="date" id="frI" value="${p?.ini || ''}"></div>
+      <div class="fgrp"><label>Periodo: hasta</label><input type="date" id="frF" value="${p?.fin || ''}"></div>
+      <div class="fgrp"><label>Fecha en que firmó</label><input type="date" id="frS" value="${hoy()}" max="${hoy()}"></div>
+      <div class="fgrp"><label>Monto</label><input type="number" step="0.01" id="frM" value="${p?.monto != null ? p.monto : ''}"></div>
+      <div class="fgrp sp2"><label>Recibo firmado (foto o PDF)</label><input type="file" id="frA" accept="image/*,application/pdf"></div>
+    </div>
+    <div class="mini" style="margin-top:10px">${p ? 'Queda ligado a este recibo y sale de "Por recabar".' : 'Para recibos de periodos anteriores o que no están en el sistema, llena el periodo y el monto a mano.'}</div>`,
+    `<button class="btn btn-s" onclick="CM('mGen')">Cancelar</button><button class="btn btn-p" onclick="firGuardar()">Guardar con PIN</button>`, 'sm');
+}
+async function firGuardar() {
+  const { cat, p } = _firCtx || {};
+  const emp_id = p ? p.emp : val('frE');
+  const f = document.getElementById('frA').files[0];
+  if (!emp_id) return toast('Elige a la persona', 'warning');
+  if (!f) return toast('Adjunta el recibo firmado', 'warning');
+  if (!val('frC').trim()) return toast('Escribe el concepto', 'warning');
+  if (!val('frI') && !val('frS')) return toast('Indica el periodo o la fecha de firma', 'warning');
+  let pin; try { pin = await askPin('Guardar recibo firmado', FIR_CAT[cat][0] + ' · ' + corto(nomEmp(emp_id))); } catch { return; }
+  let up; try { up = await subirArchivo(f, 'firmados'); } catch (e) { return toast(e.message, 'error'); }
+  const d = { categoria: cat, empleado_id: emp_id, ref_id: p?.ref || null, nomina_id: p?.nomina || null, fecha_ini: val('frI') || null, fecha_fin: val('frF') || val('frI') || null,
+    fecha_firma: val('frS') || null, concepto: val('frC').trim(), monto: val('frM') === '' ? null : +val('frM'), url: up.url, sha256: up.sha, archivo: up.nombre };
+  const r = await firmar('nom_firmado_guardar', { p_datos: d }, { pin });
+  if (!r) return;
+  CM('mGen'); toast('Recibo firmado guardado', 'success'); await cargarFirmados();
+}
+async function firAnular(id) {
+  const m = await pedir('Motivo para anular este recibo firmado.', 'Anular recibo firmado'); if (!m || !m.trim()) return;
+  const r = await firmar('nom_firmado_anular', { p_id: id, p_motivo: m.trim() }, { titulo: 'Anular recibo firmado' });
+  if (!r) return;
+  toast('Anulado', 'success'); await cargarFirmados();
 }
 
 // ══ EMPLEADOS (ficha del administrador) ═════════
